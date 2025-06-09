@@ -280,6 +280,15 @@ class AlertProcessor {
   constructor(azureServiceManager) {
     this.azureServices = azureServiceManager;
     this.onAlertGenerated = null;
+    this.notificationPermission = 'default';
+    this.initializeNotifications();
+  }
+
+  async initializeNotifications() {
+    if ('Notification' in window) {
+      this.notificationPermission = await Notification.requestPermission();
+      console.log('📱 Notification permission:', this.notificationPermission);
+    }
   }
 
   async processAlert(classification) {
@@ -359,14 +368,32 @@ class AlertProcessor {
       document.body.style.backgroundColor = '';
     }, 300);
     
-    // Vibration
+    // React Native-style Vibration API (simulated for web)
     if ('vibrate' in navigator) {
       const pattern = this.getVibrationPattern(alertData.severity);
       navigator.vibrate(pattern);
+      
+      // For critical alerts, repeat the pattern
+      if (alertData.severity === 'critical') {
+        setTimeout(() => {
+          navigator.vibrate(pattern);
+        }, 2000);
+      }
     }
     
-    // Audio notification
+    // Enhanced audio notification with different tones
     this.playNotificationSound(alertData.severity);
+    
+    // Browser notification (if permission granted)
+    if ('Notification' in window && Notification.permission === 'granted') {
+      new Notification(`Hearo Alert: ${alertData.soundType.replace('_', ' ')}`, {
+        body: `Detected in ${alertData.location} with ${alertData.confidence}% confidence`,
+        icon: '/favicon.ico',
+        tag: 'hearo-alert',
+        vibrate: this.getVibrationPattern(alertData.severity),
+        requireInteraction: alertData.severity === 'critical'
+      });
+    }
   }
 
   getSeverityColor(severity) {
@@ -380,11 +407,12 @@ class AlertProcessor {
   }
 
   getVibrationPattern(severity) {
+    // React Native vibration patterns: [pause, vibrate, pause, vibrate, ...]
     const patterns = {
-      critical: [500, 100, 500, 100, 500, 100, 500],
-      high: [300, 100, 300, 100, 300],
-      medium: [200, 100, 200],
-      low: [100]
+      critical: [0, 500, 100, 500, 100, 500, 100, 500], // Emergency: Strong repeated pattern
+      high: [0, 300, 150, 300, 150, 300],               // High priority: Medium repeated
+      medium: [0, 200, 100, 200],                       // Medium: Two short bursts
+      low: [0, 150]                                     // Low: Single gentle vibration
     };
     return patterns[severity] || patterns.medium;
   }
@@ -398,15 +426,36 @@ class AlertProcessor {
       oscillator.connect(gainNode);
       gainNode.connect(audioContext.destination);
       
-      const frequencies = { critical: 800, high: 600, medium: 400, low: 300 };
-      oscillator.frequency.setValueAtTime(frequencies[severity] || 400, audioContext.currentTime);
-      oscillator.type = 'sine';
+      // Different sound profiles for each severity
+      const soundProfiles = {
+        critical: { frequency: 800, duration: 1.0, pulses: 3 },
+        high: { frequency: 600, duration: 0.8, pulses: 2 },
+        medium: { frequency: 450, duration: 0.5, pulses: 1 },
+        low: { frequency: 350, duration: 0.3, pulses: 1 }
+      };
       
-      gainNode.gain.setValueAtTime(0.1, audioContext.currentTime);
-      gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
+      const profile = soundProfiles[severity] || soundProfiles.medium;
       
-      oscillator.start(audioContext.currentTime);
-      oscillator.stop(audioContext.currentTime + 0.5);
+      // Create pulsed sound for alerts
+      let currentTime = audioContext.currentTime;
+      for (let i = 0; i < profile.pulses; i++) {
+        const pulse = audioContext.createOscillator();
+        const pulseGain = audioContext.createGain();
+        
+        pulse.connect(pulseGain);
+        pulseGain.connect(audioContext.destination);
+        
+        pulse.frequency.setValueAtTime(profile.frequency, currentTime);
+        pulse.type = severity === 'critical' ? 'square' : 'sine';
+        
+        pulseGain.gain.setValueAtTime(0.1, currentTime);
+        pulseGain.gain.exponentialRampToValueAtTime(0.01, currentTime + profile.duration / profile.pulses);
+        
+        pulse.start(currentTime);
+        pulse.stop(currentTime + profile.duration / profile.pulses);
+        
+        currentTime += (profile.duration / profile.pulses) + 0.1; // Small gap between pulses
+      }
     } catch (error) {
       console.warn('Audio notification failed:', error);
     }
@@ -477,6 +526,7 @@ const HearoApp = () => {
     phone: 'gentle',
     baby: 'strong'
   });
+  const [notificationPermission, setNotificationPermission] = useState('default');
 
   // Service Instances
   const azureServiceManagerRef = useRef(new AzureServiceManager());
@@ -497,6 +547,13 @@ const HearoApp = () => {
       const azureConnected = await azureServiceManagerRef.current.initialize();
       setAzureConnected(azureConnected);
       setAzureServices(azureServiceManagerRef.current.getServiceStatus());
+
+      // Request notification permission
+      if ('Notification' in window) {
+        const permission = await Notification.requestPermission();
+        setNotificationPermission(permission);
+        console.log('📱 Notification permission:', permission);
+      }
 
       // Set up callbacks
       audioProcessorRef.current.onAudioLevelChange = setAudioLevel;
@@ -556,11 +613,8 @@ const HearoApp = () => {
       setRecentAlerts(prev => [fireAlert, ...prev.slice(0, 9)]);
       setScenarioStep(3);
       
-      // Trigger visual flash for fire
-      document.body.style.backgroundColor = '#ef4444';
-      setTimeout(() => {
-        document.body.style.backgroundColor = '';
-      }, 500);
+      // Trigger comprehensive alert (visual, vibration, notification)
+      alertProcessorRef.current.triggerLocalAlert(fireAlert);
     }, 4000);
     
     // Step 3: Emergency services contacted
@@ -620,8 +674,8 @@ const HearoApp = () => {
         {/* App Bar */}
         <div className="bg-gradient-to-r from-purple-600 to-orange-500 px-6 py-8 text-white">
           <div className="flex items-center space-x-3 mb-2">
-                        <div className="w-13 h-13 bg-white bg-opacity-20 rounded-lg flex items-center justify-center">
-              <img src={hearoLogo} alt="Hearo" className="w-8 h-8 object-contain" />
+                        <div className="w-8 h-8 bg-white bg-opacity-10 rounded-lg flex items-center justify-center">
+              <img src={hearoLogo} alt="Hearo" className="w-5 h-5 object-contain" />
             </div>
             <h1 className="text-2xl font-bold">Hearo</h1>
           </div>
@@ -937,12 +991,14 @@ const HearoApp = () => {
                       <div className="flex-1">
                         <div className="flex items-center justify-between">
                           <span className="font-medium capitalize">{level}</span>
-                          <span className="font-mono text-orange-600">•••</span>
+                          <span className="font-mono text-orange-600">
+                            {level === 'gentle' ? '•••' : level === 'medium' ? '•••••' : '•••••••'}
+                          </span>
                         </div>
                         <p className="text-sm text-gray-500 mt-1">
-                          {level === 'gentle' ? 'Light vibration 3 times' : 
-                           level === 'medium' ? 'Medium vibration 3 sets' : 
-                           'Strong continuous vibration'}
+                          {level === 'gentle' ? '150ms vibration' : 
+                           level === 'medium' ? 'Double pulse' : 
+                           'Emergency pattern with strong vibration'}
                         </p>
                       </div>
                     </label>
@@ -991,7 +1047,51 @@ const HearoApp = () => {
             </div>
           </div>
 
-          {/* Performance Metrics */}
+          {/* Haptic Feedback Testing */}
+          <div className="bg-white rounded-2xl p-6 shadow-lg">
+            <h3 className="text-xl font-semibold text-gray-800 mb-4">Test Vibration Patterns</h3>
+            
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                onClick={() => navigator.vibrate && navigator.vibrate([0, 150])}
+                className="p-4 bg-green-50 hover:bg-green-100 border border-green-200 rounded-lg text-center transition-colors"
+              >
+                <div className="text-green-600 font-medium">Gentle</div>
+                <div className="text-xs text-green-500 mt-1">[0, 150]</div>
+              </button>
+              
+              <button
+                onClick={() => navigator.vibrate && navigator.vibrate([0, 200, 100, 200])}
+                className="p-4 bg-yellow-50 hover:bg-yellow-100 border border-yellow-200 rounded-lg text-center transition-colors"
+              >
+                <div className="text-yellow-600 font-medium">Medium</div>
+                <div className="text-xs text-yellow-500 mt-1">[0, 200, 100, 200]</div>
+              </button>
+              
+              <button
+                onClick={() => navigator.vibrate && navigator.vibrate([0, 300, 150, 300, 150, 300])}
+                className="p-4 bg-orange-50 hover:bg-orange-100 border border-orange-200 rounded-lg text-center transition-colors"
+              >
+                <div className="text-orange-600 font-medium">Strong</div>
+                <div className="text-xs text-orange-500 mt-1">[0, 300, 150, 300, 150, 300]</div>
+              </button>
+              
+              <button
+                onClick={() => navigator.vibrate && navigator.vibrate([0, 500, 100, 500, 100, 500, 100, 500])}
+                className="p-4 bg-red-50 hover:bg-red-100 border border-red-200 rounded-lg text-center transition-colors"
+              >
+                <div className="text-red-600 font-medium">Emergency</div>
+                <div className="text-xs text-red-500 mt-1">[0, 500, 100, 500, ...]</div>
+              </button>
+            </div>
+            
+            <button
+              onClick={() => navigator.vibrate && navigator.vibrate(0)}
+              className="w-full mt-3 p-3 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded-lg text-gray-700 font-medium transition-colors"
+            >
+              Cancel Vibration
+            </button>
+          </div>
           <div className="bg-white rounded-2xl p-6 shadow-lg">
             <h3 className="text-xl font-semibold text-gray-800 mb-4">System Performance</h3>
             
