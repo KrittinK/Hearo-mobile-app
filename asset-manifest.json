@@ -1,14 +1,14 @@
 {
   "files": {
-    "main.css": "/Hearo-mobile-app/static/css/main.6b7456fc.css",
-    "main.js": "/Hearo-mobile-app/static/js/main.135d698b.js",
+    "main.css": "/Hearo-mobile-app/static/css/main.b9e742d1.css",
+    "main.js": "/Hearo-mobile-app/static/js/main.e081c80d.js",
     "static/media/hearo_logo.png": "/Hearo-mobile-app/static/media/hearo_logo.3cbaf6674c33b1436608.png",
     "index.html": "/Hearo-mobile-app/index.html",
-    "main.6b7456fc.css.map": "/Hearo-mobile-app/static/css/main.6b7456fc.css.map",
-    "main.135d698b.js.map": "/Hearo-mobile-app/static/js/main.135d698b.js.map"
+    "main.b9e742d1.css.map": "/Hearo-mobile-app/static/css/main.b9e742d1.css.map",
+    "main.e081c80d.js.map": "/Hearo-mobile-app/static/js/main.e081c80d.js.map"
   },
   "entrypoints": [
-    "static/css/main.6b7456fc.css",
-    "static/js/main.135d698b.js"
+    "static/css/main.b9e742d1.css",
+    "static/js/main.e081c80d.js"
   ]
 }
