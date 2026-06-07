@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Bell, Home, Settings, Shield, Phone, Baby, Car, AlertTriangle, Volume2, VolumeX, Smartphone, Watch, Lightbulb, Vibrate, Users, Wifi, Cpu, BarChart2, Activity, Key, CloudOff } from 'lucide-react';
-import hearoLogo from './images/hearo_logo.png';
+import hearoLogo from './images/Hearo.png';
 
 // ==================== CONFIGURATION ====================
 const DetectionConfig = {
