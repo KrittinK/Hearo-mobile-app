@@ -1049,13 +1049,12 @@ const HearoApp = () => {
   const HomeScreen = () => (
     <div className="bg-[#0B1740] min-h-screen">
       <div className="bg-[#1E3FB8] px-6 py-8 text-white border-b border-white/10">
-        <div className="flex items-center space-x-3 mb-2">
-          <div className="w-8 h-8 bg-white bg-opacity-10 rounded-lg flex items-center justify-center">
-            <img src={hearoLogo} alt="Hearo" className="w-5 h-5 object-contain" />
+        <div className="flex items-center space-x-4 mb-1">
+          <img src={hearoLogo} alt="Hearo" className="w-14 h-14 object-contain drop-shadow-lg" />
+          <div>
+            <p className="text-[#00A8E1] text-sm font-medium tracking-wide">AI-Powered Sound Alert System</p>
           </div>
-          <h1 className="text-2xl font-bold">Hearo</h1>
         </div>
-        <p className="text-[#00A8E1] text-sm">AI-Powered Sound Alert System</p>
       </div>
 
       <div className="p-6 space-y-6 -mt-6 pb-24">
@@ -1114,7 +1113,7 @@ const HearoApp = () => {
             <div className="mt-4 p-4 bg-red-500/10 border-2 border-red-400/30 rounded-lg">
               <div className="flex items-center space-x-3 mb-3">
                 <AlertTriangle className="w-6 h-6 text-red-600 animate-pulse" />
-                <h3 className="font-bold text-red-800">CRITICAL EMERGENCY DETECTED</h3>
+                <h3 className="font-bold text-white">CRITICAL EMERGENCY DETECTED</h3>
               </div>
               <div className="space-y-2 text-sm">
                 {[
@@ -1124,7 +1123,7 @@ const HearoApp = () => {
                   { step: 4, label: '📞 Fire department (199) contacted with GPS location' },
                   { step: 5, label: '👨‍👩‍👧‍👦 Family members notified via SMS' },
                 ].map(({ step, label }) => (
-                  <div key={step} className={`flex items-center space-x-2 ${scenarioStep >= step ? 'text-green-700' : 'text-white/50'}`}>
+                  <div key={step} className={`flex items-center space-x-2 ${scenarioStep >= step ? 'text-green-400' : 'text-white/50'}`}>
                     <div className={`w-3 h-3 rounded-full flex-shrink-0 ${scenarioStep >= step ? 'bg-green-500/100' : 'bg-gray-300'}`} />
                     <span>{label}</span>
                   </div>
@@ -1132,7 +1131,7 @@ const HearoApp = () => {
               </div>
               {scenarioStep >= 5 && (
                 <div className="mt-3 p-3 bg-green-100 border border-green-300 rounded-lg">
-                  <p className="text-green-800 font-semibold text-sm">✅ Life-saving response completed in 15 seconds!</p>
+                  <p className="text-green-400 font-semibold text-sm">✅ Life-saving response completed in 15 seconds!</p>
                 </div>
               )}
             </div>
@@ -1566,7 +1565,7 @@ const HearoApp = () => {
             {[
               { Icon: Smartphone, color: 'text-[#00A8E1]', label: 'Screen Flash', on: true },
               { Icon: Watch, color: 'text-[#FFE600]', label: 'Smartwatch Integration', on: true },
-              { Icon: Lightbulb, color: 'text-yellow-600', label: 'Smart Home Lights', on: false },
+              { Icon: Lightbulb, color: 'text-[#FFE600]', label: 'Smart Home Lights', on: false },
               { Icon: Users, color: 'text-[#00A8E1]', label: 'Family Network Alerts', on: true },
             ].map(({ Icon, color, label, on }) => (
               <label key={label} className="flex items-center justify-between p-4 bg-white/5 rounded-lg cursor-pointer">
@@ -1591,8 +1590,8 @@ const HearoApp = () => {
             </button>
             <button onClick={() => navigator.vibrate && navigator.vibrate([0, 200, 100, 200])}
               className="p-4 bg-yellow-50 hover:bg-yellow-100 border border-yellow-200 rounded-lg text-center transition-colors">
-              <div className="text-yellow-600 font-medium">Medium</div>
-              <div className="text-xs text-yellow-500 mt-1">[0, 200, 100, 200]</div>
+              <div className="text-[#FFE600] font-medium">Medium</div>
+              <div className="text-xs text-[#FFE600]/80 mt-1">[0, 200, 100, 200]</div>
             </button>
             <button onClick={() => navigator.vibrate && navigator.vibrate([0, 300, 150, 300, 150, 300])}
               className="p-4 bg-[#FFE600]/10 hover:bg-[#FFE600]/20 border border-[#FFE600]/30 rounded-lg text-center transition-colors">
@@ -1697,7 +1696,7 @@ const HearoApp = () => {
 
   // ==================== RENDER ====================
   return (
-    <div className="max-w-md mx-auto bg-[#0B1740] min-h-screen">
+    <div className="max-w-md mx-auto bg-[#0B1740] min-h-screen text-white">
       <div className="pb-20">
         {currentScreen === 'home'      && <HomeScreen />}
         {currentScreen === 'settings'  && <SettingsScreen />}
