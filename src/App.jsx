@@ -1795,14 +1795,14 @@ const HearoApp = () => {
               </div>
               <div className="space-y-2">
                 {['gentle', 'medium', 'strong'].map(level => (
-                  <label key={level} className="flex items-center space-x-4 p-3 bg-white/5 rounded-lg cursor-pointer hover:bg-white/10">
+                  <label key={level} className={`flex items-center space-x-4 p-3 rounded-lg cursor-pointer transition-all ${intensity === level ? 'bg-[#FFE600]/10 border border-[#FFE600]/30' : 'bg-white/5 border border-transparent hover:bg-white/10'}`}>
                     <input type="radio" name={`v-${type}`} checked={intensity === level}
                       onChange={() => setVibrationSettings(prev => ({ ...prev, [type]: level }))}
-                      className="w-5 h-5 text-[#00A8E1]" />
+                      className="w-5 h-5 accent-[#FFE600]" />
                     <div className="flex-1 flex items-center justify-between">
-                      <span className="font-medium capitalize">{level}</span>
-                      <span className="font-mono text-[#FFE600]">
-                        {level === 'gentle' ? '•••' : level === 'medium' ? '•••••' : '•••••••'}
+                      <span className={`font-medium capitalize ${intensity === level ? 'text-[#FFE600]' : 'text-white/80'}`}>{level}</span>
+                      <span className={`font-mono text-sm ${intensity === level ? 'text-[#FFE600]' : 'text-white/40'}`}>
+                        {level === 'gentle' ? '▪▫▫' : level === 'medium' ? '▪▪▫' : '▪▪▪'}
                       </span>
                     </div>
                   </label>
@@ -1835,32 +1835,26 @@ const HearoApp = () => {
 
         {/* Vibration Test */}
         <div className="bg-[#1E3FB8]/30 rounded-2xl p-6 border border-white/10">
-          <h3 className="text-xl font-semibold text-white mb-4">Test Vibration Patterns</h3>
+          <h3 className="text-xl font-semibold text-white mb-1">Test Vibration Patterns</h3>
+          <p className="text-xs text-white/50 mb-4">Tap a button to feel each pattern on your device</p>
           <div className="grid grid-cols-2 gap-3">
-            <button onClick={() => navigator.vibrate && navigator.vibrate([0, 150])}
-              className="p-4 bg-green-500/10 hover:bg-green-100 border border-green-200 rounded-lg text-center transition-colors">
-              <div className="text-green-600 font-medium">Gentle</div>
-              <div className="text-xs text-green-500 mt-1">[0, 150]</div>
-            </button>
-            <button onClick={() => navigator.vibrate && navigator.vibrate([0, 200, 100, 200])}
-              className="p-4 bg-yellow-50 hover:bg-yellow-100 border border-yellow-200 rounded-lg text-center transition-colors">
-              <div className="text-[#FFE600] font-medium">Medium</div>
-              <div className="text-xs text-[#FFE600]/80 mt-1">[0, 200, 100, 200]</div>
-            </button>
-            <button onClick={() => navigator.vibrate && navigator.vibrate([0, 300, 150, 300, 150, 300])}
-              className="p-4 bg-[#FFE600]/10 hover:bg-[#FFE600]/20 border border-[#FFE600]/30 rounded-lg text-center transition-colors">
-              <div className="text-[#FFE600] font-medium">Strong</div>
-              <div className="text-xs text-[#FFE600] mt-1">[0, 300, 150, 300]</div>
-            </button>
-            <button onClick={() => navigator.vibrate && navigator.vibrate([0, 500, 100, 500, 100, 500])}
-              className="p-4 bg-red-50 hover:bg-red-100 border border-red-200 rounded-lg text-center transition-colors">
-              <div className="text-red-600 font-medium">Emergency</div>
-              <div className="text-xs text-red-500 mt-1">[0, 500, 100, 500…]</div>
-            </button>
+            {[
+              { label: 'Gentle',    emoji: '〰️', pattern: [0, 150],                    bg: 'bg-green-500/10 hover:bg-green-500/20 border-green-500/30',   text: 'text-green-400',  sub: 'text-green-400/70',  desc: '1 soft pulse'      },
+              { label: 'Medium',    emoji: '〰️〰️', pattern: [0, 200, 100, 200],          bg: 'bg-[#00A8E1]/10 hover:bg-[#00A8E1]/20 border-[#00A8E1]/30', text: 'text-[#00A8E1]',  sub: 'text-[#00A8E1]/70', desc: '2 short pulses'    },
+              { label: 'Strong',    emoji: '⚡', pattern: [0, 300, 150, 300, 150, 300],  bg: 'bg-[#FFE600]/10 hover:bg-[#FFE600]/20 border-[#FFE600]/30', text: 'text-[#FFE600]',  sub: 'text-[#FFE600]/70', desc: '3 firm pulses'     },
+              { label: 'Emergency', emoji: '🚨', pattern: [0, 500, 100, 500, 100, 500], bg: 'bg-red-500/10   hover:bg-red-500/20   border-red-500/30',    text: 'text-red-400',    sub: 'text-red-400/70',   desc: '3 long rapid bursts'},
+            ].map(({ label, emoji, pattern, bg, text, sub, desc }) => (
+              <button key={label} onClick={() => navigator.vibrate && navigator.vibrate(pattern)}
+                className={`p-4 rounded-xl border text-center transition-all active:scale-95 ${bg}`}>
+                <div className="text-2xl mb-1">{emoji}</div>
+                <div className={`font-semibold text-sm ${text}`}>{label}</div>
+                <div className={`text-xs mt-0.5 ${sub}`}>{desc}</div>
+              </button>
+            ))}
           </div>
           <button onClick={() => navigator.vibrate && navigator.vibrate(0)}
-            className="w-full mt-3 p-3 bg-white/10 hover:bg-white/15 border border-white/15 rounded-lg text-white/70 font-medium transition-colors">
-            Cancel Vibration
+            className="w-full mt-3 p-3 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl text-white/60 hover:text-white/80 text-sm font-medium transition-all">
+            ✕ Cancel Vibration
           </button>
         </div>
 
