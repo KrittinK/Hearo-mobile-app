@@ -1,17 +1,18 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Bell, Home, Settings, Shield, Phone, Baby, Car, AlertTriangle, Volume2, VolumeX, Smartphone, Watch, Lightbulb, Vibrate, Users, Wifi, Cpu, BarChart2, Activity, Key, CloudOff } from 'lucide-react';
+import { Bell, Home, Settings, Shield, Phone, Baby, Car, AlertTriangle, Volume2, VolumeX, Smartphone, Watch, Lightbulb, Vibrate, Users, Wifi, Cpu, BarChart2, Activity, Key } from 'lucide-react';
+import * as tf from '@tensorflow/tfjs';
 import hearoLogo from './images/Hearo.png';
 
 // ==================== CONFIGURATION ====================
 const DetectionConfig = {
   sampleRate: 16000,
-  bufferDuration: 2,       // seconds of audio per classification
-  detectionInterval: 8000, // ms between runs (8s = 7.5 req/min, safely under Gemini 2.5 Flash 10 RPM free tier)
-  defaultSensitivity: 7,   // more aggressive by default so more sounds trigger
-  hfModel: 'MIT/ast-finetuned-audioset-10-10-0.4593',
-  hfEndpoint: 'https://api-inference.huggingface.co/models/MIT/ast-finetuned-audioset-10-10-0.4593',
-  whisperEndpoint: 'https://api-inference.huggingface.co/models/openai/whisper-large-v3',
-  // Gemini 2.5 Flash — latest model, supports audio inline, 10 req/min free tier
+  bufferDuration: 2,
+  detectionInterval: 2000, // 2s — YAMNet is on-device, no rate limit
+  defaultSensitivity: 7,
+  // YAMNet — Google's on-device audio classifier, 521 AudioSet classes
+  yamnetModelUrl: 'https://tfhub.dev/google/tfjs-model/yamnet/tfjs/1/model.json',
+  yamnetClassesUrl: 'https://raw.githubusercontent.com/tensorflow/models/master/research/audioset/yamnet/yamnet_class_map.csv',
+  // Gemini — kept for transcription only in this build
   geminiEndpoint: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
 };
 
@@ -101,6 +102,145 @@ async function blobToBase64(blob) {
     reader.onerror = reject;
     reader.readAsDataURL(blob);
   });
+}
+
+// ==================== YAMNET CLASSIFIER ====================
+// On-device audio classifier using Google's YAMNet model via TensorFlow.js
+// 521 AudioSet classes, runs at ~0.1s per call, no internet required after load
+class YamNetClassifier {
+  constructor() {
+    this.model      = null;
+    this.classNames = [];       // 521 class name strings
+    this.status     = 'idle';   // idle | loading | ready | error
+    this.onStatusChange = null; // (status) => void
+    this.sensitivityThreshold = 0.35;
+  }
+
+  setSensitivity(v) {
+    this.sensitivityThreshold = Math.max(0.10, 0.55 - (v / 10) * 0.45);
+  }
+
+  // Load model + class names (call once on app start)
+  async load() {
+    if (this.status === 'ready' || this.status === 'loading') return this.status === 'ready';
+    this.status = 'loading';
+    if (this.onStatusChange) this.onStatusChange('loading');
+    try {
+      // Load class names (try cache → network → built-in fallback)
+      this.classNames = await this._loadClassNames();
+      console.log(`✅ YAMNet class names loaded: ${this.classNames.length}`);
+
+      // Load TF.js model from TFHub
+      console.log('⏳ Loading YAMNet model (~10MB)...');
+      this.model = await tf.loadGraphModel(
+        DetectionConfig.yamnetModelUrl,
+        { fromTFHub: true }
+      );
+      console.log('✅ YAMNet model ready');
+
+      // Warm up with a tiny silent inference
+      const warmup = tf.zeros([16000]);
+      try { const o = this.model.execute(warmup); if (Array.isArray(o)) o.forEach(t => t.dispose()); else o.dispose(); } catch (_) {}
+      warmup.dispose();
+
+      this.status = 'ready';
+      if (this.onStatusChange) this.onStatusChange('ready');
+      return true;
+    } catch (e) {
+      console.error('❌ YAMNet load failed:', e.message);
+      this.status = 'error';
+      if (this.onStatusChange) this.onStatusChange('error');
+      return false;
+    }
+  }
+
+  async _loadClassNames() {
+    // 1. Try localStorage cache
+    try {
+      const cached = localStorage.getItem('hearo_yamnet_classes');
+      if (cached) {
+        const arr = JSON.parse(cached);
+        if (Array.isArray(arr) && arr.length >= 500) return arr;
+      }
+    } catch (_) {}
+
+    // 2. Fetch CSV from GitHub
+    try {
+      const res = await fetch(DetectionConfig.yamnetClassesUrl, { signal: AbortSignal.timeout(10000) });
+      const csv = await res.text();
+      // CSV format: index,mid,display_name  (display_name may be quoted)
+      const names = csv.trim().split('\n').slice(1).map(line => {
+        const parts = line.split(',');
+        const name = parts.slice(2).join(',').replace(/^"|"$/g, '').trim();
+        return name;
+      });
+      try { localStorage.setItem('hearo_yamnet_classes', JSON.stringify(names)); } catch (_) {}
+      return names;
+    } catch (e) {
+      console.warn('Using built-in YAMNet class fallback');
+    }
+
+    // 3. Built-in fallback — key classes at their correct indices
+    const fallback = Array.from({ length: 521 }, (_, i) => `class_${i}`);
+    const known = {
+      0:'Speech', 1:'Male speech, man speaking', 2:'Female speech, woman speaking',
+      3:'Child speech, kid speaking', 6:'Whispering', 14:'Crying, sobbing',
+      17:'Baby cry, infant cry', 18:'Screaming', 19:'Shout',
+      74:'Dog', 75:'Bark', 76:'Bow-wow', 77:'Growling',
+      300:'Car alarm', 301:'Honking', 302:'Car horn, automobile horn',
+      363:'Telephone bell ringing', 372:'Doorbell, cowbell', 374:'Ding-dong',
+      388:'Fire alarm', 389:'Smoke detector, smoke alarm',
+      390:'Alarm clock', 391:'Alarm',
+      393:'Siren', 394:'Civil defense siren', 395:'Ambulance (siren)',
+      396:'Fire engine, fire truck (siren)', 397:'Police car (siren)',
+      427:'Breaking', 428:'Glass',
+      429:'Knock', 430:'Tap', 431:'Rapping',
+    };
+    Object.entries(known).forEach(([i, n]) => { fallback[parseInt(i)] = n; });
+    return fallback;
+  }
+
+  // Classify a Float32Array of 16kHz mono audio samples
+  // Returns [{className, confidence, category}] sorted by confidence
+  async classify(audioSamples) {
+    if (!this.model || this.status !== 'ready') return null;
+
+    const startTime = performance.now();
+    const waveform = tf.tensor1d(audioSamples);
+    let outputs;
+    try {
+      outputs = this.model.execute(waveform);
+    } catch (e) {
+      waveform.dispose();
+      console.warn('YAMNet execute error:', e.message);
+      return null;
+    }
+
+    try {
+      // YAMNet outputs: [scores[frames, 521], embeddings[frames,1024], spectrogram[frames,64]]
+      const scoresTensor = Array.isArray(outputs) ? outputs[0] : outputs;
+      const meanScores   = scoresTensor.mean(0);          // [521]
+      const scoresData   = await meanScores.data();        // Float32Array(521)
+
+      const processingTime = `${((performance.now() - startTime) / 1000).toFixed(2)}s`;
+
+      const predictions = Array.from(scoresData)
+        .map((score, i) => ({
+          className:  this.classNames[i] || `class_${i}`,
+          confidence: score,
+          category:   matchAudioSetLabel(this.classNames[i] || ''),
+        }))
+        .sort((a, b) => b.confidence - a.confidence)
+        .slice(0, 15);
+
+      meanScores.dispose();
+      return { predictions, processingTime };
+    } finally {
+      waveform.dispose();
+      if (Array.isArray(outputs)) outputs.forEach(t => t.dispose());
+      else outputs.dispose();
+    }
+  }
 }
 
 // ==================== SERVICE MANAGER ====================
@@ -314,22 +454,23 @@ class AudioProcessor {
 
 // ==================== SOUND CLASSIFIER ====================
 class SoundClassifier {
-  constructor(serviceManager) {
+  constructor(serviceManager, yamnet) {
     this.svc = serviceManager;
+    this.yamnet = yamnet;           // YamNetClassifier instance
     this.isProcessing = false;
     this.onProcessingChange = null;
     this.onTopPredictionsUpdate = null;
     this.sensitivityThreshold = 0.35;
     this.warmingUp = false;
-    this.currentAbort = null; // AbortController for the active fetch
-    this.onTranscriptUpdate = null; // (text: string) => void — called even when no sound category matched
+    this.currentAbort = null;
+    this.onTranscriptUpdate = null;
   }
 
   setSensitivity(v) {
     this.sensitivityThreshold = Math.max(0.12, 0.55 - (v / 10) * 0.43);
+    if (this.yamnet) this.yamnet.setSensitivity(v);
   }
 
-  // Call this from stopListening() to instantly cancel any in-flight API call
   abort() {
     if (this.currentAbort) { this.currentAbort.abort(); this.currentAbort = null; }
     this.isProcessing = false;
@@ -341,25 +482,42 @@ class SoundClassifier {
     this.isProcessing = true;
     if (this.onProcessingChange) this.onProcessingChange(true);
     try {
-      // 1. Try Gemini first — best accuracy; fast mode skips transcript (Web Speech handles it)
-      if (this.svc.geminiKey && this.svc.geminiStatus !== 'offline' && audioBuffer) {
-        const result = await this.classifyWithGemini(audioBuffer, fastMode);
+      // 1. YAMNet — on-device, purpose-built for sound classification (PRIMARY)
+      if (this.yamnet?.status === 'ready' && audioBuffer) {
+        const result = await this.classifyWithYamNet(audioBuffer);
         if (result) return result;
       }
-      // 2. Fall back to Hugging Face AST cloud
-      if (this.svc.hfStatus !== 'offline' && audioBuffer) {
-        const result = await this.classifyWithHuggingFace(audioBuffer);
-        if (result) return result;
-      }
-      // 3. Local frequency analysis (always available)
+      // 2. Frequency analysis — always available, last resort
       return this.classifyWithFrequencyAnalysis(freqData);
     } catch (e) {
-      console.warn('Classification error, falling back:', e.message);
+      console.warn('Classification error:', e.message);
       return this.classifyWithFrequencyAnalysis(freqData);
     } finally {
       this.isProcessing = false;
       if (this.onProcessingChange) this.onProcessingChange(false);
     }
+  }
+
+  async classifyWithYamNet(audioBuffer) {
+    const result = await this.yamnet.classify(audioBuffer);
+    if (!result) return null;
+    const { predictions, processingTime } = result;
+
+    if (this.onTopPredictionsUpdate) this.onTopPredictionsUpdate(predictions);
+
+    const best = predictions.find(
+      p => p.category && p.confidence >= this.sensitivityThreshold
+    );
+    if (!best) return null;
+
+    console.log(`✅ YAMNet: ${best.className} (${Math.round(best.confidence * 100)}%) in ${processingTime}`);
+    return {
+      soundType:      best.category,
+      confidence:     Math.round(best.confidence * 100),
+      source:         'YAMNet (on-device)',
+      processingTime,
+      topPredictions: predictions,
+    };
   }
 
   async classifyWithGemini(audioBuffer, fastMode = false) {
@@ -829,10 +987,12 @@ const HearoApp = () => {
   const [isListening, setIsListening]       = useState(false);
   const [isProcessing, setIsProcessing]     = useState(false);
   const [audioLevel, setAudioLevel]         = useState(0);
+  // eslint-disable-next-line no-unused-vars
   const [hfStatus, setHfStatus]             = useState('idle');
   const [modelServices, setModelServices]   = useState({ hfApi: false, hfAuthenticated: false, localStorage: false });
+  // eslint-disable-next-line no-unused-vars
   const [apiKeyInput, setApiKeyInput]       = useState('');
-  const [apiKeySaved, setApiKeySaved]       = useState(false);
+  // apiKeySaved removed — HF key UI not used in YAMNet build
   const [geminiKeyInput, setGeminiKeyInput] = useState('');
   const [geminiKeySaved, setGeminiKeySaved] = useState(false);
   const [liveTopPredictions, setLivePreds]  = useState([]);
@@ -854,17 +1014,21 @@ const HearoApp = () => {
   const [transcriptEnabled, setTranscriptEnabled] = useState(true);
   const [showTranscript, setShowTranscript]     = useState(true);
 
-  // Detection speed: 2000 = paid/fast, 4000 = paid/balanced, 8000 = free tier safe
+  // Detection speed — YAMNet is on-device so 2s is default (no rate limit)
   const [detectionInterval, setDetectionIntervalState] = useState(
-    () => parseInt(localStorage.getItem('hearo_detection_interval') || '8000')
+    () => parseInt(localStorage.getItem('hearo_detection_interval') || '2000')
   );
   const detectionIntervalRef = useRef(
-    parseInt(localStorage.getItem('hearo_detection_interval') || '8000')
+    parseInt(localStorage.getItem('hearo_detection_interval') || '2000')
   );
 
+  // YAMNet status
+  const [yamnetStatus, setYamnetStatus] = useState('idle'); // idle|loading|ready|error
+
+  const yamnetRef      = useRef(new YamNetClassifier());
   const svcRef         = useRef(new ServiceManager());
   const audioRef       = useRef(new AudioProcessor());
-  const classRef       = useRef(new SoundClassifier(svcRef.current));
+  const classRef       = useRef(new SoundClassifier(svcRef.current, yamnetRef.current));
   const alertRef       = useRef(new AlertProcessor());
   const transcriberRef = useRef(new SpeechTranscriber());
   const intervalRef    = useRef(null);
@@ -897,6 +1061,10 @@ const HearoApp = () => {
       setTranscriptLines([...lines]);
       setInterimText(interim);
     };
+
+    // Wire YAMNet status callback and kick off background model load (~10 MB)
+    yamnetRef.current.onStatusChange = setYamnetStatus;
+    yamnetRef.current.load(); // intentionally not awaited — non-blocking
 
     setHfStatus('checking');
     await svcRef.current.initialize((services, status) => {
@@ -1002,18 +1170,7 @@ const HearoApp = () => {
     setWarmingUp(false);
   };
 
-  const saveApiKey = () => {
-    svcRef.current.saveApiKey(apiKeyInput);
-    setApiKeySaved(true);
-    setModelServices(prev => ({ ...prev, hfAuthenticated: !!apiKeyInput.trim() }));
-    setTimeout(() => setApiKeySaved(false), 2000);
-    // Re-check HF status with new key
-    setHfStatus('checking');
-    svcRef.current.initialize((services, status) => {
-      setModelServices({ ...services });
-      setHfStatus(status);
-    });
-  };
+  // saveApiKey removed — HF key UI not used in YAMNet build
 
   const saveGeminiKey = () => {
     svcRef.current.saveGeminiKey(geminiKeyInput);
@@ -1032,7 +1189,7 @@ const HearoApp = () => {
       const a = { id: Date.now(), type: 'emergency', soundType: 'fire_alarm',
         time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
         severity: 'critical', location: 'Kitchen', confidence: 97,
-        source: 'HF AST AI', timestamp: new Date().toISOString() };
+        source: 'YAMNet (on-device)', timestamp: new Date().toISOString() };
       setRecentAlerts(prev => [a, ...prev.slice(0, 9)]);
       setScenarioStep(3);
       alertRef.current.triggerLocalAlert(a);
@@ -1044,31 +1201,32 @@ const HearoApp = () => {
 
   // ==================== STATUS BADGE ====================
   const StatusBadge = () => {
-    // If Gemini key is configured, show Gemini as primary
-    if (modelServices.geminiApi) {
-      return (
-        <div className="flex items-center space-x-1.5 text-xs px-2 py-1 rounded-full bg-[#00A8E1]/10 text-[#00A8E1]">
-          <Cpu className="w-3 h-3" />
-          <span>Gemini 2.5 Flash (primary) + HF AST fallback</span>
-        </div>
-      );
-    }
-    const badges = {
-      idle:         { color: 'bg-white/10 text-white/60',              text: 'Initializing...' },
-      checking:     { color: 'bg-[#FFE600]/10 text-[#FFE600]',         text: 'Connecting to AI...' },
-      ready:        { color: 'bg-green-500/10 text-green-400',          text: 'HF AST AI ready' },
-      warming:      { color: 'bg-[#FFE600]/10 text-[#FFE600]',         text: 'AI warming up (~20s)...' },
-      rate_limited: { color: 'bg-[#FFE600]/10 text-[#FFE600]',         text: 'HF rate limited — add API key' },
-      offline:      { color: 'bg-[#00A8E1]/10 text-[#00A8E1]',         text: 'Frequency analysis (offline)' },
+    // YAMNet (on-device) is the primary sound classifier in this build
+    const yamnetBadges = {
+      idle:    { color: 'bg-white/10 text-white/60',          text: 'YAMNet: loading model…',      spin: false },
+      loading: { color: 'bg-[#FFE600]/10 text-[#FFE600]',     text: 'YAMNet: downloading (~10MB)…', spin: true  },
+      ready:   { color: 'bg-green-500/10 text-green-400',      text: 'YAMNet (on-device) ready ✓',  spin: false },
+      error:   { color: 'bg-red-500/10 text-red-400',          text: 'YAMNet load error — freq fallback', spin: false },
     };
-    const b = badges[hfStatus] || badges.idle;
-    const spinning = hfStatus === 'checking' || hfStatus === 'warming';
+    const yb = yamnetBadges[yamnetStatus] || yamnetBadges.idle;
+
+    // Gemini badge (shows when key is configured — used for transcription)
+    const geminiActive = modelServices.geminiApi;
+
     return (
-      <div className={`flex items-center space-x-1.5 text-xs px-2 py-1 rounded-full ${b.color}`}>
-        {spinning
-          ? <div className="animate-spin w-3 h-3 border border-current border-t-transparent rounded-full" />
-          : hfStatus === 'offline' ? <CloudOff className="w-3 h-3" /> : <Cpu className="w-3 h-3" />}
-        <span>{b.text}</span>
+      <div className="flex flex-wrap gap-1.5">
+        <div className={`flex items-center space-x-1.5 text-xs px-2 py-1 rounded-full ${yb.color}`}>
+          {yb.spin
+            ? <div className="animate-spin w-3 h-3 border border-current border-t-transparent rounded-full" />
+            : <Cpu className="w-3 h-3" />}
+          <span>{yb.text}</span>
+        </div>
+        {geminiActive && (
+          <div className="flex items-center space-x-1.5 text-xs px-2 py-1 rounded-full bg-[#00A8E1]/10 text-[#00A8E1]">
+            <Cpu className="w-3 h-3" />
+            <span>Gemini (transcription) ✓</span>
+          </div>
+        )}
       </div>
     );
   };
@@ -1146,7 +1304,7 @@ const HearoApp = () => {
               <div className="space-y-2 text-sm">
                 {[
                   { step: 1, label: '🔥 Fire alarm detected in kitchen (97% confidence)' },
-                  { step: 2, label: '🤖 HF AST AI processing emergency sound' },
+                  { step: 2, label: '🤖 YAMNet on-device processing emergency sound' },
                   { step: 3, label: '🚨 Emergency alert generated automatically' },
                   { step: 4, label: '📞 Fire department (199) contacted with GPS location' },
                   { step: 5, label: '👨‍👩‍👧‍👦 Family members notified via SMS' },
@@ -1331,12 +1489,10 @@ const HearoApp = () => {
           {/* Status rows */}
           <div className="space-y-2 mb-4">
             {[
+              { label: 'YAMNet (on-device)', ok: yamnetStatus === 'ready',
+                detail: yamnetStatus === 'loading' ? 'downloading model (~10MB)…' : yamnetStatus === 'ready' ? '521 AudioSet classes ✓' : yamnetStatus === 'error' ? 'load failed — using freq fallback' : 'pending…' },
               { label: 'Gemini 2.5 Flash', ok: modelServices.geminiApi,
-                detail: modelServices.geminiApi ? 'primary classifier ✓' : 'not configured (add key below)' },
-              { label: 'Hugging Face API', ok: modelServices.hfApi,
-                detail: hfStatus === 'warming' ? 'warming up...' : hfStatus === 'rate_limited' ? 'rate limited' : hfStatus === 'ready' ? 'connected (fallback)' : hfStatus === 'checking' ? 'checking...' : 'unreachable' },
-              { label: 'HF API Key', ok: modelServices.hfAuthenticated,
-                detail: modelServices.hfAuthenticated ? 'configured ✓' : 'not set (free tier)' },
+                detail: modelServices.geminiApi ? 'transcription + sound context ✓' : 'not configured (add key below)' },
               { label: 'Local Storage', ok: modelServices.localStorage, detail: 'alert history' },
             ].map(({ label, ok, detail }) => (
               <div key={label} className={`flex items-center justify-between p-3 rounded-lg ${ok ? 'bg-green-500/10' : 'bg-white/5'}`}>
@@ -1344,7 +1500,7 @@ const HearoApp = () => {
                   <span className="font-medium text-sm">{label}</span>
                   <span className="text-xs text-white/60 ml-2">{detail}</span>
                 </div>
-                <div className={`w-2.5 h-2.5 rounded-full ${ok ? 'bg-green-500/100' : 'bg-gray-300'}`} />
+                <div className={`w-2.5 h-2.5 rounded-full ${ok ? 'bg-green-500' : yamnetStatus === 'loading' && label === 'YAMNet (on-device)' ? 'bg-[#FFE600] animate-pulse' : 'bg-white/20'}`} />
               </div>
             ))}
           </div>
@@ -1362,14 +1518,15 @@ const HearoApp = () => {
               </div>
             </div>
           </div>
-          <div className="p-4 bg-[#00A8E1]/10 rounded-xl border border-purple-100">
+          <div className="p-4 bg-green-500/10 rounded-xl border border-green-500/20">
             <div className="flex items-start space-x-3">
-              <BarChart2 className="w-5 h-5 text-[#00A8E1] mt-0.5 flex-shrink-0" />
+              <BarChart2 className="w-5 h-5 text-green-400 mt-0.5 flex-shrink-0" />
               <div>
-                <p className="text-sm font-semibold text-white">HF AST — Fallback</p>
-                <p className="text-xs text-[#00A8E1] mt-1">
-                  Audio Spectrogram Transformer, 527 AudioSet classes, 0.459 mAP.
-                  Used when Gemini is not configured or unavailable.
+                <p className="text-sm font-semibold text-white">YAMNet — On-Device (Primary Sound Classifier)</p>
+                <p className="text-xs text-green-400 mt-1">
+                  Google's audio classification model. 521 AudioSet classes, runs entirely
+                  in your browser — no API key, no cost, no rate limits, no internet needed.
+                  Loads once (~10 MB) and is cached locally.
                 </p>
               </div>
             </div>
@@ -1407,36 +1564,7 @@ const HearoApp = () => {
           )}
           {!modelServices.geminiApi && (
             <p className="mt-2 text-xs text-white/60">
-              Without a key, falls back to Hugging Face AST (no transcription).
-            </p>
-          )}
-        </div>
-
-        {/* HF API Key Configuration */}
-        <div className="bg-[#1E3FB8]/30 rounded-2xl p-6 border border-white/10">
-          <h3 className="text-lg font-semibold text-white mb-2 flex items-center">
-            <Key className="w-5 h-5 mr-3 text-[#FFE600]" />Hugging Face API Key
-          </h3>
-          <p className="text-xs text-white/60 mb-4">
-            Fallback AI — removes rate limits. Free at{' '}
-            <span className="text-[#00A8E1] underline">huggingface.co/settings/tokens</span>
-          </p>
-          <div className="flex space-x-2">
-            <input
-              type="password"
-              value={apiKeyInput}
-              onChange={e => setApiKeyInput(e.target.value)}
-              placeholder="hf_xxxxxxxxxxxxxxxxxxxx"
-              className="flex-1 p-3 bg-white/10 border border-white/20 rounded-lg text-sm font-mono text-white placeholder-white/40 focus:outline-none focus:ring-2 focus:ring-[#00A8E1]/50"
-            />
-            <button onClick={saveApiKey}
-              className="px-4 py-3 bg-[#1E3FB8] hover:bg-[#1835A0] text-white rounded-lg font-semibold text-sm transition-colors">
-              {apiKeySaved ? '✓' : 'Save'}
-            </button>
-          </div>
-          {hfStatus === 'rate_limited' && (
-            <p className="mt-2 text-xs text-[#FFE600]">
-              ⚠️ Rate limited — add an API key above or use Gemini as primary.
+              Without a key, YAMNet handles sound detection and Web Speech handles transcription (English only).
             </p>
           )}
         </div>
@@ -1569,18 +1697,21 @@ const HearoApp = () => {
                 <span>Aggressive</span>
               </div>
               <p className="text-xs text-white/50 mt-1">
-                HF confidence threshold: {Math.round(Math.max(0.12, 0.55 - (sensitivity / 10) * 0.43) * 100)}%
+                YAMNet confidence threshold: {Math.round(Math.max(0.12, 0.55 - (sensitivity / 10) * 0.43) * 100)}%
               </p>
             </div>
             <div>
               <label className="block text-sm font-medium text-white/90 mb-2">Active AI Mode</label>
               <div className="p-3 bg-white/5 rounded-lg text-sm text-white/90 border border-white/10">
-                {modelServices.geminiApi ? '✅ Gemini 2.5 Flash (primary) → HF AST (fallback) → Frequency analysis' :
-                 hfStatus === 'ready' ? '✅ Hugging Face AST (cloud AI, 527 AudioSet classes)' :
-                 hfStatus === 'warming' ? '⏳ HF AST warming up — using frequency analysis' :
-                 hfStatus === 'rate_limited' ? '⚠️ HF rate limited — add API key or use Gemini' :
-                 hfStatus === 'checking' ? '🔄 Connecting to Hugging Face...' :
-                 '⚡ Frequency analysis (HF offline — check internet)'}
+                {yamnetStatus === 'ready' && modelServices.geminiApi
+                  ? '✅ YAMNet on-device (sounds) + Gemini (transcription)'
+                  : yamnetStatus === 'ready'
+                  ? '✅ YAMNet on-device (521 AudioSet classes) + Web Speech (transcription)'
+                  : yamnetStatus === 'loading'
+                  ? '⏳ YAMNet downloading… using frequency analysis meanwhile'
+                  : yamnetStatus === 'error'
+                  ? '⚠️ YAMNet failed — frequency analysis active'
+                  : '⏳ YAMNet pending — frequency analysis active'}
               </div>
             </div>
 
@@ -1588,13 +1719,13 @@ const HearoApp = () => {
             <div>
               <label className="block text-sm font-medium text-white mb-1">Detection Speed</label>
               <p className="text-xs text-white/50 mb-3">
-                How often Gemini scans for sounds. Faster = more responsive but uses more API quota.
+                How often YAMNet scans for sounds. Faster = more responsive. On-device, so no API quota cost.
               </p>
               <div className="grid grid-cols-3 gap-2">
                 {[
-                  { ms: 2000, label: '2s',  tier: 'Paid',     desc: '~30 req/min'  },
-                  { ms: 4000, label: '4s',  tier: 'Paid',     desc: '~15 req/min'  },
-                  { ms: 8000, label: '8s',  tier: 'Free',     desc: '~7 req/min'   },
+                  { ms: 2000, label: '2s',  tier: 'Fast',     desc: 'on-device'    },
+                  { ms: 4000, label: '4s',  tier: 'Balanced', desc: 'on-device'    },
+                  { ms: 8000, label: '8s',  tier: 'Eco',      desc: 'on-device'    },
                 ].map(({ ms, label, tier, desc }) => (
                   <button key={ms}
                     onClick={() => changeDetectionInterval(ms)}
@@ -1611,12 +1742,12 @@ const HearoApp = () => {
               </div>
               {detectionInterval <= 4000 && (
                 <p className="text-xs text-[#00A8E1] mt-2">
-                  ⚡ Fast mode — Gemini focuses on sounds only. Web Speech API handles transcription in parallel.
+                  ⚡ Fast mode — YAMNet runs on-device every {detectionInterval / 1000}s. No API quota consumed.
                 </p>
               )}
               {detectionInterval === 8000 && (
                 <p className="text-xs text-white/50 mt-2">
-                  Free tier safe. Upgrade to a paid Gemini key for 2s–4s detection.
+                  Eco mode — conserves battery. YAMNet still runs fully on-device at no cost.
                 </p>
               )}
             </div>
@@ -1711,7 +1842,7 @@ const HearoApp = () => {
           <div className="grid grid-cols-2 gap-4 text-sm">
             <div className="p-3 bg-[#00A8E1]/10 rounded-lg">
               <div className="font-medium text-white">Primary AI</div>
-              <div className="text-lg font-bold text-[#00A8E1]">{modelServices.geminiApi ? 'Gemini' : 'HF AST'}</div>
+              <div className="text-lg font-bold text-[#00A8E1]">{modelServices.geminiApi ? 'Gemini' : 'YAMNet'}</div>
               <div className="text-xs text-[#00A8E1]">{modelServices.geminiApi ? '+ transcription' : '0.459 mAP'}</div>
             </div>
             <div className="p-3 bg-green-500/10 rounded-lg">
@@ -1765,7 +1896,7 @@ const HearoApp = () => {
             <div>
               <h4 className="font-semibold text-white">Intelligent Emergency Detection</h4>
               <p className="text-sm text-[#00A8E1] mt-1">
-                Gemini 2.5 Flash AI (or HF AST fallback) automatically classifies 527 sound categories — including fire alarms, screaming, and glass breaking — and transcribes speech during emergencies.
+                YAMNet (on-device, 521 AudioSet classes) classifies sounds — fire alarms, screaming, glass breaking, and more — entirely in your browser. Gemini 2.5 Flash adds transcription when a key is configured.
               </p>
             </div>
           </div>
