@@ -512,6 +512,7 @@ class SoundClassifier {
     console.log(`✅ YAMNet: ${best.className} (${Math.round(best.confidence * 100)}%) in ${processingTime}`);
     return {
       soundType:      best.category,
+      rawLabel:       best.className,   // e.g. "Police car (siren)", "Glass", "Baby cry"
       confidence:     Math.round(best.confidence * 100),
       source:         'YAMNet (on-device)',
       processingTime,
@@ -886,6 +887,7 @@ class AlertProcessor {
     const info = SoundCategories[c.soundType] || { type: 'unknown', severity: 'medium', location: 'Unknown' };
     return {
       id: Date.now(), type: info.type, soundType: c.soundType,
+      rawLabel: c.rawLabel || null,   // specific YAMNet class name e.g. "Police car (siren)"
       time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
       severity: info.severity, location: info.location,
       confidence: c.confidence, source: c.source,
@@ -970,10 +972,18 @@ class UIUtils {
   }
   static getAlertText(type) {
     return {
-      doorbell: 'Doorbell', phone: 'Phone Call', emergency: 'Emergency',
-      baby: 'Baby Crying', car: 'Car Horn', dog: 'Dog Barking',
-      knock: 'Knocking', siren: 'Siren', alarm: 'Alarm',
-    }[type] || 'Unknown Sound';
+      // generic types (alert.type)
+      emergency: 'Emergency', warning: 'Warning', baby: 'Baby Alert',
+      // specific sound categories (alert.soundType)
+      fire_alarm: 'Fire Alarm', smoke_detector: 'Smoke Detector',
+      doorbell: 'Doorbell', phone_ring: 'Phone Ringing',
+      baby_cry: 'Baby Crying', car_horn: 'Car Horn',
+      glass_break: 'Glass Breaking', scream: 'Screaming',
+      dog_bark: 'Dog Barking', knock: 'Knocking',
+      siren: 'Siren', alarm: 'Alarm',
+      // legacy / fallback
+      phone: 'Phone Call', car: 'Car Horn', dog: 'Dog Barking',
+    }[type] || null;
   }
   static getSeverityColor(s) {
     return { critical: '#ef4444', high: '#f97316', medium: '#eab308', low: '#22c55e' }[s] || '#eab308';
@@ -1419,9 +1429,18 @@ const HearoApp = () => {
                         alert.severity === 'critical' ? 'bg-red-500/20' : alert.severity === 'high' ? 'bg-[#FFE600]/20' : 'bg-[#00A8E1]/20'
                       }`}>{UIUtils.getAlertIcon(alert.type)}</div>
                       <div>
-                        <p className="font-semibold text-white">{UIUtils.getAlertText(alert.type)}</p>
-                        <p className="text-sm text-white/70">{alert.location}</p>
-                        <p className="text-xs text-[#00A8E1]">{alert.confidence}% • {alert.source}</p>
+                        <p className="font-semibold text-white">
+                          {alert.rawLabel || UIUtils.getAlertText(alert.soundType) || UIUtils.getAlertText(alert.type)}
+                        </p>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+                            alert.severity === 'critical' ? 'bg-red-500/20 text-red-300' :
+                            alert.severity === 'high'     ? 'bg-[#FFE600]/20 text-[#FFE600]' :
+                                                           'bg-[#00A8E1]/20 text-[#00A8E1]'
+                          }`}>{UIUtils.getAlertText(alert.type)}</span>
+                          <span className="text-xs text-white/50">{alert.location}</span>
+                        </div>
+                        <p className="text-xs text-[#00A8E1] mt-0.5">{alert.confidence}% • {alert.source}</p>
                       </div>
                     </div>
                     <div className="text-right">
