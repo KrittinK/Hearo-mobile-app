@@ -872,7 +872,14 @@ class AlertProcessor {
   constructor() { this.onAlertGenerated = null; }
 
   async initializeNotifications() {
-    if ('Notification' in window) await Notification.requestPermission();
+    // NOTE: requestPermission must only be called from a user gesture.
+    // This method is now a no-op — permission is requested in startListening() instead.
+  }
+
+  async requestNotificationPermission() {
+    if ('Notification' in window && Notification.permission === 'default') {
+      await Notification.requestPermission();
+    }
   }
 
   async processAlert(classification) {
@@ -1130,6 +1137,9 @@ const HearoApp = () => {
 
   const startListening = async () => {
     if (listeningRef.current || isStartingRef.current) return;
+
+    // Request notification permission here — must be inside a user gesture
+    await alertRef.current.requestNotificationPermission();
 
     isStartingRef.current = true;
     setIsStarting(true);
@@ -1781,7 +1791,7 @@ const HearoApp = () => {
             <div key={type} className="mb-6 last:mb-0">
               <div className="flex items-center space-x-3 mb-3">
                 <div className="text-[#00A8E1]">{UIUtils.getAlertIcon(type)}</div>
-                <span className="font-medium text-white">{UIUtils.getAlertText(type)}</span>
+                <span className="font-medium text-white">{UIUtils.getAlertText(type) || type}</span>
               </div>
               <div className="space-y-2">
                 {['gentle', 'medium', 'strong'].map(level => (
@@ -1966,7 +1976,7 @@ const HearoApp = () => {
 
       <div className="sr-only" aria-live="polite">
         {isListening && recentAlerts.length > 0 &&
-          `Hearo detected ${UIUtils.getAlertText(recentAlerts[0].type)} at ${recentAlerts[0].location} with ${recentAlerts[0].confidence}% confidence`}
+          `Hearo detected ${recentAlerts[0].rawLabel || UIUtils.getAlertText(recentAlerts[0].soundType) || UIUtils.getAlertText(recentAlerts[0].type) || 'a sound'} at ${recentAlerts[0].location} with ${recentAlerts[0].confidence}% confidence`}
       </div>
     </div>
   );
