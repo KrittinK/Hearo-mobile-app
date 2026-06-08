@@ -336,14 +336,14 @@ class SoundClassifier {
     if (this.onProcessingChange) this.onProcessingChange(false);
   }
 
-  async classifySound(audioBuffer, freqData) {
+  async classifySound(audioBuffer, freqData, fastMode = false) {
     if (this.isProcessing) return null;
     this.isProcessing = true;
     if (this.onProcessingChange) this.onProcessingChange(true);
     try {
-      // 1. Try Gemini first — best accuracy + transcription in one call
+      // 1. Try Gemini first — best accuracy; fast mode skips transcript (Web Speech handles it)
       if (this.svc.geminiKey && this.svc.geminiStatus !== 'offline' && audioBuffer) {
-        const result = await this.classifyWithGemini(audioBuffer);
+        const result = await this.classifyWithGemini(audioBuffer, fastMode);
         if (result) return result;
       }
       // 2. Fall back to Hugging Face AST cloud
@@ -362,23 +362,31 @@ class SoundClassifier {
     }
   }
 
-  async classifyWithGemini(audioBuffer) {
+  async classifyWithGemini(audioBuffer, fastMode = false) {
     const startTime = performance.now();
     this.currentAbort = new AbortController();
     const { signal } = this.currentAbort;
     try {
-      console.log('🎙️ Sending audio to Gemini...');
+      console.log(`🎙️ Gemini [${fastMode ? 'fast/sounds' : 'full/sounds+transcript'}]...`);
       const wavBlob = encodeWAV(audioBuffer, DetectionConfig.sampleRate);
       const base64Audio = await blobToBase64(wavBlob);
       if (signal.aborted) return null;
 
-      const prompt = `You are an environmental sound classifier for a hearing-impaired alert system. Your PRIMARY job is to detect important non-speech sounds.
+      // Fast mode: sounds-only prompt — leaner response, ~0.5s faster
+      // Used when detection interval ≤ 4s (paid tier) since Web Speech handles transcription
+      const fastPrompt = `Detect sounds in this 2-second audio. Return ONLY JSON:
+{"sounds":[{"label":"<name>","confidence":<0.0-1.0>}]}
+
+Label these EXACTLY if heard (confidence ≥ 0.2):
+fire alarm, smoke detector, siren, baby cry, dog bark, doorbell, phone ringing, car horn, glass breaking, screaming, knocking, alarm, speech
+
+Return {"sounds":[]} if none detected. No other text.`;
+
+      const fullPrompt = `You are an environmental sound classifier for a hearing-impaired alert system. Your PRIMARY job is to detect important non-speech sounds.
 
 Listen carefully to this 2-second audio clip and return ONLY a JSON object:
 {
-  "sounds": [
-    {"label": "<sound name>", "confidence": <0.0 to 1.0>}
-  ],
+  "sounds": [{"label": "<sound name>", "confidence": <0.0 to 1.0>}],
   "transcript": "<Thai or English speech only, empty string otherwise>"
 }
 
@@ -401,6 +409,8 @@ Rules:
 - Also report "speech" if someone is talking
 - For transcript: ONLY include Thai or English speech. Any other language → ""
 - Return ONLY the JSON, no other text`;
+
+      const prompt = fastMode ? fastPrompt : fullPrompt;
 
       const body = {
         contents: [{
@@ -447,11 +457,13 @@ Rules:
       }
 
       const sounds = Array.isArray(parsed?.sounds) ? parsed.sounds : [];
-      const transcript = typeof parsed?.transcript === 'string' ? parsed.transcript.trim() : '';
+      // Fast mode has no transcript field — Web Speech API handles transcription instead
+      const transcript = fastMode ? '' : (typeof parsed?.transcript === 'string' ? parsed.transcript.trim() : '');
       const processingTime = `${((performance.now() - startTime) / 1000).toFixed(1)}s`;
 
-      // Build topPredictions for display
+      // Build topPredictions for display (filter out "speech" — not an alert category)
       const topPredictions = sounds
+        .filter(s => s.label && s.label.toLowerCase() !== 'speech')
         .sort((a, b) => b.confidence - a.confidence)
         .map(s => ({
           className: s.label,
@@ -464,7 +476,7 @@ Rules:
       // Best Hearo-relevant sound above threshold
       const best = topPredictions.find(p => p.category && p.confidence >= this.sensitivityThreshold);
 
-      // Always surface transcript even when no alert category matched
+      // Surface transcript to panel even when no alert triggered
       if (!best) {
         if (transcript && this.onTranscriptUpdate) this.onTranscriptUpdate(transcript);
         return null;
@@ -842,14 +854,22 @@ const HearoApp = () => {
   const [transcriptEnabled, setTranscriptEnabled] = useState(true);
   const [showTranscript, setShowTranscript]     = useState(true);
 
+  // Detection speed: 2000 = paid/fast, 4000 = paid/balanced, 8000 = free tier safe
+  const [detectionInterval, setDetectionIntervalState] = useState(
+    () => parseInt(localStorage.getItem('hearo_detection_interval') || '8000')
+  );
+  const detectionIntervalRef = useRef(
+    parseInt(localStorage.getItem('hearo_detection_interval') || '8000')
+  );
+
   const svcRef         = useRef(new ServiceManager());
   const audioRef       = useRef(new AudioProcessor());
   const classRef       = useRef(new SoundClassifier(svcRef.current));
   const alertRef       = useRef(new AlertProcessor());
   const transcriberRef = useRef(new SpeechTranscriber());
   const intervalRef    = useRef(null);
-  const listeningRef   = useRef(false); // ref so async callbacks can read current value
-  const isStartingRef  = useRef(false); // ref mirror of isStarting — readable synchronously
+  const listeningRef   = useRef(false);
+  const isStartingRef  = useRef(false);
 
   useEffect(() => {
     init();
@@ -892,15 +912,50 @@ const HearoApp = () => {
     if (intervalRef.current) clearInterval(intervalRef.current);
   };
 
+  // Extracted so it can be scheduled by both startListening and changeDetectionInterval
+  const runDetection = async () => {
+    if (!listeningRef.current) return;
+    const level = audioRef.current.getAudioLevel();
+    if (level > 10) {
+      const audioBuffer = await audioRef.current.captureAudioBuffer();
+      if (!listeningRef.current) return;
+      const freqData = audioRef.current.getFrequencyData();
+      setWarmingUp(classRef.current.warmingUp);
+      // Fast mode (≤4s): sounds only — Web Speech handles transcription in parallel
+      const fastMode = detectionIntervalRef.current <= 4000;
+      const result = await classRef.current.classifySound(audioBuffer, freqData, fastMode);
+      if (!listeningRef.current) return;
+      setWarmingUp(false);
+      setHfStatus(svcRef.current.hfStatus);
+      if (result?.transcript) {
+        transcriberRef.current.lines.push({
+          text: result.transcript,
+          time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          confidence: result.transcriptConfidence || 90,
+        });
+        setTranscriptLines([...transcriberRef.current.lines.slice(-30)]);
+      }
+      if (result) await alertRef.current.processAlert(result);
+    }
+  };
+
+  const changeDetectionInterval = (ms) => {
+    detectionIntervalRef.current = ms;
+    setDetectionIntervalState(ms);
+    localStorage.setItem('hearo_detection_interval', ms.toString());
+    // Live-restart the interval if currently listening
+    if (listeningRef.current && intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = setInterval(runDetection, ms);
+      console.log(`⚡ Detection interval changed to ${ms}ms`);
+    }
+  };
+
   const startListening = async () => {
-    // Guard uses REFS (not state) — state lags behind by one render cycle so
-    // isListening/isStarting from closure can be stale when the user clicks fast.
     if (listeningRef.current || isStartingRef.current) return;
 
     isStartingRef.current = true;
     setIsStarting(true);
-
-    // Mark intent BEFORE the await so stopListening() can cancel us
     listeningRef.current = true;
 
     const ok = await audioRef.current.initialize();
@@ -914,48 +969,21 @@ const HearoApp = () => {
       return;
     }
 
-    // Stop was pressed while the mic permission prompt was showing
-    if (!listeningRef.current) {
-      audioRef.current.stop();
-      return;
-    }
+    if (!listeningRef.current) { audioRef.current.stop(); return; }
 
     setIsListening(true);
     classRef.current.setSensitivity(sensitivity);
 
-    // Clear any stale interval from a previous run (defensive)
     if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
 
-    // Start speech transcription in parallel (Web Speech API)
+    // Start Web Speech API in parallel — real-time continuous transcription
     if (transcriptEnabled && transcriberRef.current.supported) {
       transcriberRef.current.clearTranscript();
       transcriberRef.current.start(transcriptLang);
     }
 
-    intervalRef.current = setInterval(async () => {
-      if (!listeningRef.current) return; // guard: stop() may have been called mid-await
-      const level = audioRef.current.getAudioLevel();
-      if (level > 10) {
-        const audioBuffer = await audioRef.current.captureAudioBuffer();
-        if (!listeningRef.current) return; // check again after async capture
-        const freqData = audioRef.current.getFrequencyData();
-        setWarmingUp(classRef.current.warmingUp);
-        const result = await classRef.current.classifySound(audioBuffer, freqData);
-        if (!listeningRef.current) return; // check again after slow cloud call
-        setWarmingUp(false);
-        setHfStatus(svcRef.current.hfStatus);
-        // Merge Gemini transcript into the transcript panel if available
-        if (result?.transcript) {
-          transcriberRef.current.lines.push({
-            text: result.transcript,
-            time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-            confidence: result.transcriptConfidence || 90,
-          });
-          setTranscriptLines([...transcriberRef.current.lines.slice(-30)]);
-        }
-        if (result) await alertRef.current.processAlert(result);
-      }
-    }, DetectionConfig.detectionInterval);
+    // Start Gemini sound detection loop at configured speed
+    intervalRef.current = setInterval(runDetection, detectionIntervalRef.current);
   };
 
   const stopListening = () => {
@@ -1130,22 +1158,52 @@ const HearoApp = () => {
                 ))}
               </div>
               {scenarioStep >= 5 && (
-                <div className="mt-3 p-3 bg-green-100 border border-green-300 rounded-lg">
+                <div className="mt-3 p-3 bg-green-500/10 border border-green-400/30 rounded-lg">
                   <p className="text-green-400 font-semibold text-sm">✅ Life-saving response completed in 15 seconds!</p>
                 </div>
               )}
             </div>
           )}
 
-          {(isProcessing || warmingUp) && (
-            <div className="mt-4 p-3 bg-[#FFE600]/10 rounded-lg border border-[#FFE600]/30">
+          {/* Dual-system status when listening */}
+          {isListening && (
+            <div className="mt-4 space-y-2">
+              {/* Sound Detection */}
+              <div className={`p-2.5 rounded-lg border flex items-center justify-between ${
+                isProcessing ? 'bg-[#FFE600]/10 border-[#FFE600]/30' : 'bg-white/5 border-white/10'
+              }`}>
+                <div className="flex items-center space-x-2">
+                  {isProcessing
+                    ? <div className="animate-spin rounded-full h-3.5 w-3.5 border-b-2 border-[#FFE600] flex-shrink-0" />
+                    : <div className="w-3.5 h-3.5 rounded-full bg-[#00A8E1]/60 flex-shrink-0" />}
+                  <span className="text-sm text-white/80">
+                    🔊 Sound detection
+                  </span>
+                </div>
+                <span className="text-xs text-white/50 font-mono">
+                  every {detectionInterval / 1000}s
+                </span>
+              </div>
+              {/* Transcription */}
+              <div className="p-2.5 rounded-lg border bg-white/5 border-white/10 flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <div className="w-2 h-2 bg-[#FFE600] rounded-full animate-pulse flex-shrink-0" />
+                  <span className="text-sm text-white/80">
+                    💬 Transcription
+                  </span>
+                </div>
+                <span className="text-xs text-[#00A8E1]">
+                  {transcriberRef.current.supported ? 'live' : 'Gemini only'}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {warmingUp && (
+            <div className="mt-2 p-3 bg-[#FFE600]/10 rounded-lg border border-[#FFE600]/30">
               <div className="flex items-center space-x-3">
                 <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-[#FFE600]" />
-                <span className="text-white font-medium text-sm">
-                  {warmingUp ? 'HF model warming up (~20s first time)...' :
-                   modelServices.geminiApi ? 'Classifying with Gemini 2.5 Flash...' :
-                   'Classifying sound with HF AST AI...'}
-                </span>
+                <span className="text-white font-medium text-sm">HF model warming up (~20s first time)...</span>
               </div>
             </div>
           )}
@@ -1524,6 +1582,43 @@ const HearoApp = () => {
                  hfStatus === 'checking' ? '🔄 Connecting to Hugging Face...' :
                  '⚡ Frequency analysis (HF offline — check internet)'}
               </div>
+            </div>
+
+            {/* Detection Speed */}
+            <div>
+              <label className="block text-sm font-medium text-white mb-1">Detection Speed</label>
+              <p className="text-xs text-white/50 mb-3">
+                How often Gemini scans for sounds. Faster = more responsive but uses more API quota.
+              </p>
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { ms: 2000, label: '2s',  tier: 'Paid',     desc: '~30 req/min'  },
+                  { ms: 4000, label: '4s',  tier: 'Paid',     desc: '~15 req/min'  },
+                  { ms: 8000, label: '8s',  tier: 'Free',     desc: '~7 req/min'   },
+                ].map(({ ms, label, tier, desc }) => (
+                  <button key={ms}
+                    onClick={() => changeDetectionInterval(ms)}
+                    className={`p-3 rounded-xl border text-center transition-all ${
+                      detectionInterval === ms
+                        ? 'bg-[#FFE600] border-[#FFE600] text-[#1E3FB8]'
+                        : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10'
+                    }`}>
+                    <div className="text-xl font-bold">{label}</div>
+                    <div className={`text-xs font-semibold ${detectionInterval === ms ? 'text-[#1E3FB8]/70' : 'text-[#00A8E1]'}`}>{tier}</div>
+                    <div className={`text-xs mt-0.5 ${detectionInterval === ms ? 'text-[#1E3FB8]/60' : 'text-white/40'}`}>{desc}</div>
+                  </button>
+                ))}
+              </div>
+              {detectionInterval <= 4000 && (
+                <p className="text-xs text-[#00A8E1] mt-2">
+                  ⚡ Fast mode — Gemini focuses on sounds only. Web Speech API handles transcription in parallel.
+                </p>
+              )}
+              {detectionInterval === 8000 && (
+                <p className="text-xs text-white/50 mt-2">
+                  Free tier safe. Upgrade to a paid Gemini key for 2s–4s detection.
+                </p>
+              )}
             </div>
           </div>
         </div>
