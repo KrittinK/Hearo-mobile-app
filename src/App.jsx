@@ -10,7 +10,7 @@ const DetectionConfig = {
   detectionInterval: 2000, // 2s — YAMNet is on-device, no rate limit
   defaultSensitivity: 7,
   // YAMNet — Google's on-device audio classifier, 521 AudioSet classes
-  yamnetModelUrl: 'https://tfhub.dev/google/tfjs-model/yamnet/tfjs/1/model.json',
+  yamnetModelUrl: '/models/yamnet/model.json', // hosted locally — avoids TFHub/Kaggle CORS
   yamnetClassesUrl: 'https://raw.githubusercontent.com/tensorflow/models/master/research/audioset/yamnet/yamnet_class_map.csv',
   // Gemini — kept for transcription only in this build
   geminiEndpoint: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
@@ -130,11 +130,10 @@ class YamNetClassifier {
       this.classNames = await this._loadClassNames();
       console.log(`✅ YAMNet class names loaded: ${this.classNames.length}`);
 
-      // Load TF.js model from TFHub
-      console.log('⏳ Loading YAMNet model (~10MB)...');
+      // Load TF.js model from local public/ folder (avoids TFHub/Kaggle CORS)
+      console.log('⏳ Loading YAMNet model (~15MB)...');
       this.model = await tf.loadGraphModel(
-        DetectionConfig.yamnetModelUrl,
-        { fromTFHub: true }
+        DetectionConfig.yamnetModelUrl
       );
       console.log('✅ YAMNet model ready');
 
