@@ -12,7 +12,27 @@ on-device sound classifier for Hearo, exported to TensorFlow.js.
    `https://colab.research.google.com/github/KrittinK/Hearo-mobile-app/blob/main/notebooks/yamnet_esc50_finetune.ipynb`
 2. Run the **Setup** cell, then **Runtime -> Restart session**, then **Run all**.
 3. It downloads ESC-50, extracts YAMNet embeddings, trains a classifier head,
-   and downloads `hearo_sound_model.zip`.
+   **benchmarks it against stock YAMNet**, and downloads `hearo_sound_model.zip`.
+
+### Does it actually improve accuracy?
+
+Step 7 of the notebook answers this directly. It runs both models — **stock YAMNet**
+(what the app uses today) and your **fine-tuned model** — on the same held-out test
+clips (ESC-50 fold 5, never seen during training) and prints a side-by-side table of
+accuracy per Hearo alert category. If the fine-tuned column isn't higher, the training
+didn't help and you'll know immediately.
+
+### Will it work offline?
+
+**Yes — sound detection runs 100% on-device with no internet.** Both YAMNet and your
+fine-tuned head are bundled in `public/models/` and run in the browser via TensorFlow.js.
+Training (this notebook) needs internet, but that runs once on Google's servers, not in
+the app.
+
+One caveat: for the *web page itself* to load with no internet at all (cold start in
+airplane mode), the app needs to be installed as a PWA with a service worker caching the
+assets — that isn't enabled yet. Once the page is loaded, detection works offline
+regardless. Ask me to enable the service worker if you want true airplane-mode cold start.
 
 ### After training
 
