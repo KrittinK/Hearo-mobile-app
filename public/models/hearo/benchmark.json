@@ -1,0 +1,5 @@
+{
+  "fine_tuned_clip_acc": 0.855,
+  "hearo_stock_acc": 0.5,
+  "hearo_finetuned_acc": 0.984375
+}

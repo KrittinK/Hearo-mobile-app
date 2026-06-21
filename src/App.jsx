@@ -12,6 +12,10 @@ const DetectionConfig = {
   // YAMNet — Google's on-device audio classifier, 521 AudioSet classes
   yamnetModelUrl: '/models/yamnet/model.json', // hosted locally — avoids TFHub/Kaggle CORS
   yamnetClassesUrl: 'https://raw.githubusercontent.com/tensorflow/models/master/research/audioset/yamnet/yamnet_class_map.csv',
+  // Custom fine-tuned head — trained on ESC-50, runs on top of YAMNet embeddings
+  hearoModelUrl:   '/models/hearo/model.json',
+  hearoLabelsUrl:  '/models/hearo/labels.json',
+  hearoMappingUrl: '/models/hearo/esc50_to_hearo.json',
   // Gemini — kept for transcription only in this build
   geminiEndpoint: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
 };
@@ -114,6 +118,14 @@ class YamNetClassifier {
     this.status     = 'idle';   // idle | loading | ready | error
     this.onStatusChange = null; // (status) => void
     this.sensitivityThreshold = 0.35;
+
+    // Custom fine-tuned ESC-50 head (optional, runs on YAMNet embeddings)
+    this.customModel   = null;
+    this.customLabels  = [];     // 50 ESC-50 class names
+    this.customMapping = {};     // esc50_label → Hearo category
+    this.customStatus  = 'idle'; // idle | loading | ready | error
+    this.onCustomStatusChange = null;
+    this.useCustom     = false;  // A/B switch: true = custom model, false = stock YAMNet
   }
 
   setSensitivity(v) {
@@ -149,6 +161,41 @@ class YamNetClassifier {
       console.error('❌ YAMNet load failed:', e.message);
       this.status = 'error';
       if (this.onStatusChange) this.onStatusChange('error');
+      return false;
+    }
+  }
+
+  // Load the custom fine-tuned ESC-50 head (call once, after load()).
+  // It takes YAMNet's 1024-dim embeddings and outputs 50 ESC-50 probabilities.
+  async loadCustom() {
+    if (this.customStatus === 'ready' || this.customStatus === 'loading') {
+      return this.customStatus === 'ready';
+    }
+    this.customStatus = 'loading';
+    if (this.onCustomStatusChange) this.onCustomStatusChange('loading');
+    try {
+      const [model, labels, mapping] = await Promise.all([
+        tf.loadGraphModel(DetectionConfig.hearoModelUrl),
+        fetch(DetectionConfig.hearoLabelsUrl).then(r => r.json()),
+        fetch(DetectionConfig.hearoMappingUrl).then(r => r.json()),
+      ]);
+      this.customModel   = model;
+      this.customLabels  = labels;
+      this.customMapping = mapping;
+
+      // Warm up with a dummy embedding batch
+      const warm = tf.zeros([3, 1024]);
+      try { const o = warm; const r = this.customModel.execute(warm); r.dispose(); o.dispose(); }
+      catch (_) { warm.dispose(); }
+
+      this.customStatus = 'ready';
+      if (this.onCustomStatusChange) this.onCustomStatusChange('ready');
+      console.log(`✅ Custom ESC-50 model ready (${labels.length} classes)`);
+      return true;
+    } catch (e) {
+      console.warn('⚠️ Custom model load failed:', e.message);
+      this.customStatus = 'error';
+      if (this.onCustomStatusChange) this.onCustomStatusChange('error');
       return false;
     }
   }
@@ -217,7 +264,32 @@ class YamNetClassifier {
 
     try {
       // YAMNet outputs: [scores[frames, 521], embeddings[frames,1024], spectrogram[frames,64]]
-      const scoresTensor = Array.isArray(outputs) ? outputs[0] : outputs;
+      const arr = Array.isArray(outputs) ? outputs : [outputs];
+
+      // ---- Custom fine-tuned ESC-50 head (preferred when enabled) ----
+      // Pick the YAMNet output that is the 1024-dim embedding (don't assume index)
+      const embeddings = arr.find(t => t.shape[t.shape.length - 1] === 1024);
+      if (this.useCustom && this.customModel && embeddings) {
+        const logits     = this.customModel.execute(embeddings); // [frames, 50]
+        const meanProbs  = logits.mean(0);                  // [50]
+        const probsData  = await meanProbs.data();
+        const processingTime = `${((performance.now() - startTime) / 1000).toFixed(2)}s`;
+
+        const predictions = Array.from(probsData)
+          .map((score, i) => {
+            const label = this.customLabels[i] || `class_${i}`;
+            return { className: label, confidence: score, category: this.customMapping[label] || null };
+          })
+          .sort((a, b) => b.confidence - a.confidence)
+          .slice(0, 15);
+
+        logits.dispose();
+        meanProbs.dispose();
+        return { predictions, processingTime };
+      }
+
+      // ---- Stock YAMNet (521 AudioSet classes) ----
+      const scoresTensor = arr[0];
       const meanScores   = scoresTensor.mean(0);          // [521]
       const scoresData   = await meanScores.data();        // Float32Array(521)
 
@@ -509,12 +581,13 @@ class SoundClassifier {
     );
     if (!best) return null;
 
-    console.log(`✅ YAMNet: ${best.className} (${Math.round(best.confidence * 100)}%) in ${processingTime}`);
+    const engine = this.yamnet.useCustom ? 'Custom ESC-50' : 'YAMNet';
+    console.log(`✅ ${engine}: ${best.className} (${Math.round(best.confidence * 100)}%) in ${processingTime}`);
     return {
       soundType:      best.category,
       rawLabel:       best.className,   // e.g. "Police car (siren)", "Glass", "Baby cry"
       confidence:     Math.round(best.confidence * 100),
-      source:         'YAMNet (on-device)',
+      source:         this.yamnet.useCustom ? 'Custom ESC-50 (on-device)' : 'YAMNet (on-device)',
       processingTime,
       topPredictions: predictions,
     };
@@ -1040,6 +1113,11 @@ const HearoApp = () => {
 
   // YAMNet status
   const [yamnetStatus, setYamnetStatus] = useState('idle'); // idle|loading|ready|error
+  // Custom fine-tuned model status + A/B mode ('stock' | 'custom')
+  const [customStatus, setCustomStatus] = useState('idle'); // idle|loading|ready|error
+  const [modelMode, setModelMode] = useState(
+    () => localStorage.getItem('hearo_model_mode') || 'custom'
+  );
 
   const yamnetRef      = useRef(new YamNetClassifier());
   const svcRef         = useRef(new ServiceManager());
@@ -1078,9 +1156,12 @@ const HearoApp = () => {
       setInterimText(interim);
     };
 
-    // Wire YAMNet status callback and kick off background model load (~10 MB)
+    // Wire YAMNet status callback and kick off background model load (~15 MB)
     yamnetRef.current.onStatusChange = setYamnetStatus;
-    yamnetRef.current.load(); // intentionally not awaited — non-blocking
+    yamnetRef.current.onCustomStatusChange = setCustomStatus;
+    yamnetRef.current.useCustom = (modelMode === 'custom');
+    // Load YAMNet, then the custom head (both non-blocking background loads)
+    yamnetRef.current.load().then(() => yamnetRef.current.loadCustom());
 
     setHfStatus('checking');
     await svcRef.current.initialize((services, status) => {
@@ -1121,6 +1202,19 @@ const HearoApp = () => {
       }
       if (result) await alertRef.current.processAlert(result);
     }
+  };
+
+  const changeModelMode = (mode) => {
+    // mode: 'stock' (YAMNet 521) | 'custom' (fine-tuned ESC-50)
+    yamnetRef.current.useCustom = (mode === 'custom');
+    setModelMode(mode);
+    localStorage.setItem('hearo_model_mode', mode);
+    setLivePreds([]); // clear stale predictions from the other model
+    // Lazy-load the custom head if switching to it for the first time
+    if (mode === 'custom' && yamnetRef.current.customStatus === 'idle') {
+      yamnetRef.current.loadCustom();
+    }
+    console.log(`🔀 Detection model → ${mode === 'custom' ? 'Custom ESC-50' : 'Stock YAMNet'}`);
   };
 
   const changeDetectionInterval = (ms) => {
@@ -1518,7 +1612,9 @@ const HearoApp = () => {
           <div className="space-y-2 mb-4">
             {[
               { label: 'YAMNet (on-device)', ok: yamnetStatus === 'ready',
-                detail: yamnetStatus === 'loading' ? 'downloading model (~10MB)…' : yamnetStatus === 'ready' ? '521 AudioSet classes ✓' : yamnetStatus === 'error' ? 'load failed — using freq fallback' : 'pending…' },
+                detail: yamnetStatus === 'loading' ? 'downloading model (~15MB)…' : yamnetStatus === 'ready' ? '521 AudioSet classes ✓' : yamnetStatus === 'error' ? 'load failed — using freq fallback' : 'pending…' },
+              { label: 'Custom ESC-50 model', ok: customStatus === 'ready',
+                detail: customStatus === 'loading' ? 'loading fine-tuned head…' : customStatus === 'ready' ? '50 classes • 98% on alerts ✓' : customStatus === 'error' ? 'not found in /models/hearo' : 'pending…' },
               { label: 'Gemini 2.5 Flash', ok: modelServices.geminiApi,
                 detail: modelServices.geminiApi ? 'transcription + sound context ✓' : 'not configured (add key below)' },
               { label: 'Local Storage', ok: modelServices.localStorage, detail: 'alert history' },
@@ -1531,6 +1627,36 @@ const HearoApp = () => {
                 <div className={`w-2.5 h-2.5 rounded-full ${ok ? 'bg-green-500' : yamnetStatus === 'loading' && label === 'YAMNet (on-device)' ? 'bg-[#FFE600] animate-pulse' : 'bg-white/20'}`} />
               </div>
             ))}
+          </div>
+
+          {/* Detection model A/B toggle */}
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-white/90 mb-1">Detection Model</label>
+            <p className="text-xs text-white/50 mb-3">Switch live to compare. Both run on-device, free.</p>
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                { mode: 'custom', title: 'Custom ESC-50', sub: 'Your trained model', stat: '98% on alerts' },
+                { mode: 'stock',  title: 'Stock YAMNet',  sub: '521 AudioSet classes', stat: '50% on alerts' },
+              ].map(({ mode, title, sub, stat }) => (
+                <button key={mode}
+                  onClick={() => changeModelMode(mode)}
+                  disabled={mode === 'custom' && customStatus !== 'ready'}
+                  className={`p-3 rounded-xl border text-left transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
+                    modelMode === mode
+                      ? 'bg-[#FFE600]/10 border-[#FFE600]/40'
+                      : 'bg-white/5 border-white/10 hover:bg-white/10'
+                  }`}>
+                  <div className={`text-sm font-semibold ${modelMode === mode ? 'text-[#FFE600]' : 'text-white/90'}`}>
+                    {title}{modelMode === mode && ' ✓'}
+                  </div>
+                  <div className="text-xs text-white/50 mt-0.5">{sub}</div>
+                  <div className={`text-xs mt-1 font-mono ${modelMode === mode ? 'text-[#FFE600]/80' : 'text-[#00A8E1]'}`}>{stat}</div>
+                </button>
+              ))}
+            </div>
+            {modelMode === 'custom' && customStatus === 'error' && (
+              <p className="text-xs text-red-400 mt-2">⚠️ Custom model not found — train it with the Colab notebook and drop it in public/models/hearo/.</p>
+            )}
           </div>
 
           {/* Model info */}
@@ -1731,15 +1857,16 @@ const HearoApp = () => {
             <div>
               <label className="block text-sm font-medium text-white/90 mb-2">Active AI Mode</label>
               <div className="p-3 bg-white/5 rounded-lg text-sm text-white/90 border border-white/10">
-                {yamnetStatus === 'ready' && modelServices.geminiApi
-                  ? '✅ YAMNet on-device (sounds) + Gemini (transcription)'
-                  : yamnetStatus === 'ready'
-                  ? '✅ YAMNet on-device (521 AudioSet classes) + Web Speech (transcription)'
-                  : yamnetStatus === 'loading'
-                  ? '⏳ YAMNet downloading… using frequency analysis meanwhile'
-                  : yamnetStatus === 'error'
-                  ? '⚠️ YAMNet failed — frequency analysis active'
-                  : '⏳ YAMNet pending — frequency analysis active'}
+                {(() => {
+                  const engine = modelMode === 'custom' && customStatus === 'ready'
+                    ? 'Custom ESC-50 (your trained model)'
+                    : 'Stock YAMNet (521 AudioSet classes)';
+                  const transcription = modelServices.geminiApi ? 'Gemini (transcription)' : 'Web Speech (transcription)';
+                  if (yamnetStatus === 'ready') return `✅ ${engine} + ${transcription}`;
+                  if (yamnetStatus === 'loading') return '⏳ Model downloading… frequency analysis meanwhile';
+                  if (yamnetStatus === 'error') return '⚠️ Model failed — frequency analysis active';
+                  return '⏳ Model pending — frequency analysis active';
+                })()}
               </div>
             </div>
 
