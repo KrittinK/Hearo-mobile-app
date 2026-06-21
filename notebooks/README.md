@@ -10,7 +10,7 @@ on-device sound classifier for Hearo, exported to TensorFlow.js.
 1. Open the notebook in [Google Colab](https://colab.research.google.com/):
    `File -> Upload notebook`, or open it directly from GitHub via
    `https://colab.research.google.com/github/KrittinK/Hearo-mobile-app/blob/main/notebooks/yamnet_esc50_finetune.ipynb`
-2. Run the **Setup** cell, then **Runtime -> Restart session**, then **Run all**.
+2. **Runtime -> Run all.** No restart needed — it uses Colab's built-in TensorFlow.
 3. It downloads ESC-50, extracts YAMNet embeddings, trains a classifier head,
    **benchmarks it against stock YAMNet**, and downloads `hearo_sound_model.zip`.
 
