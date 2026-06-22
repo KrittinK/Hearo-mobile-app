@@ -1430,6 +1430,26 @@ const HearoApp = () => {
             </div>
           )}
 
+          {/* Recent Alerts — shown here at the top so they're immediately visible */}
+          {recentAlerts.length > 0 && (
+            <div className="mb-3 p-3 rounded-lg bg-[#FFE600]/5 border border-[#FFE600]/20">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm font-bold text-[#FFE600]">🔔 Recent Alerts ({recentAlerts.length})</span>
+                <button onClick={() => { localStorage.removeItem('hearo_alerts'); setRecentAlerts([]); }}
+                  className="text-xs px-2 py-1 rounded bg-white/5 text-white/60">Clear</button>
+              </div>
+              <div className="space-y-1.5">
+                {recentAlerts.slice(0, 5).map(alert => (
+                  <div key={alert.id} className="flex items-center justify-between text-sm"
+                    style={{ borderLeft: `3px solid ${UIUtils.getSeverityColor(alert.severity)}`, paddingLeft: 8 }}>
+                    <span className="text-white font-medium">{alert.rawLabel || alert.soundType}</span>
+                    <span className="text-white/50 text-xs">{alert.confidence}% · {alert.time}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="flex items-center justify-between mb-4">
             <span className="text-white/70">
               {isListening ? 'Listening for sounds' : isStarting ? 'Starting…' : 'Not listening'}
