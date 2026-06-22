@@ -1417,6 +1417,9 @@ const HearoApp = () => {
               <div>buffer filled: <span className={debugInfo.filled ? 'text-green-400' : 'text-red-400'}>{String(debugInfo.filled)}</span> · samples: <span className={debugInfo.bufLen > 0 ? 'text-green-400' : 'text-red-400'}>{debugInfo.bufLen}</span></div>
               <div>model: <span className={debugInfo.model === 'ready' ? 'text-green-400' : 'text-red-400'}>{debugInfo.model}</span> · thr: {Math.round(classRef.current.sensitivityThreshold * 100)}%</div>
               <div>result: <span className="text-white">{debugInfo.result || '—'}</span></div>
+              <div>last alert: <span className={recentAlerts.length ? 'text-green-400' : 'text-white/50'}>
+                {recentAlerts.length ? `${recentAlerts[0].rawLabel || recentAlerts[0].soundType} @ ${recentAlerts[0].time}` : 'none yet'}
+              </span> · total: {recentAlerts.length}</div>
               <div className="mt-1 text-white/60">top guesses:</div>
               {liveTopPredictions.slice(0, 4).map((p, i) => (
                 <div key={i} className="pl-2">
