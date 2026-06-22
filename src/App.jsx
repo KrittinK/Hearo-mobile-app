@@ -572,7 +572,13 @@ class SoundClassifier {
       // The old frequency-analysis heuristic is intentionally NOT used for alerts:
       // it invented false "Screaming/Emergency" hits from ordinary room noise.
       if (this.yamnet?.status === 'ready' && audioBuffer) {
-        return await this.classifyWithYamNet(audioBuffer);
+        // Race against a timeout: on mobile a stalled WebGL read could otherwise
+        // hang here forever, leaving isProcessing stuck true and freezing all
+        // future detection (live preds frozen, every cycle = no-alert).
+        return await Promise.race([
+          this.classifyWithYamNet(audioBuffer),
+          new Promise((resolve) => setTimeout(() => resolve(null), 4000)),
+        ]);
       }
       // Model not ready (loading/idle/error) — stay silent, never guess.
       return null;
@@ -1154,6 +1160,7 @@ const HearoApp = () => {
   const intervalRef    = useRef(null);
   const listeningRef   = useRef(false);
   const isStartingRef  = useRef(false);
+  const cycleCountRef  = useRef(0); // detection cycles (debug)
 
   useEffect(() => {
     init();
@@ -1207,8 +1214,11 @@ const HearoApp = () => {
   // Extracted so it can be scheduled by both startListening and changeDetectionInterval
   const runDetection = async () => {
     if (!listeningRef.current) return;
+    cycleCountRef.current++;
     const level = audioRef.current.getAudioLevel();
-    const dbg = { level, model: yamnetRef.current.status, filled: !!audioRef.current.bufferFilled };
+    // proc captured at start: if a prior cycle is stuck, this reads true
+    const dbg = { level, model: yamnetRef.current.status, filled: !!audioRef.current.bufferFilled,
+                  proc: classRef.current.isProcessing, cycle: cycleCountRef.current };
     if (level > 10) {
       const audioBuffer = await audioRef.current.captureAudioBuffer();
       dbg.bufLen = audioBuffer ? audioBuffer.length : 0;
@@ -1416,6 +1426,7 @@ const HearoApp = () => {
               <div>mic level: <span className={debugInfo.level > 10 ? 'text-green-400' : 'text-[#FFE600]'}>{debugInfo.level}</span> (need &gt;10)</div>
               <div>buffer filled: <span className={debugInfo.filled ? 'text-green-400' : 'text-red-400'}>{String(debugInfo.filled)}</span> · samples: <span className={debugInfo.bufLen > 0 ? 'text-green-400' : 'text-red-400'}>{debugInfo.bufLen}</span></div>
               <div>model: <span className={debugInfo.model === 'ready' ? 'text-green-400' : 'text-red-400'}>{debugInfo.model}</span> · thr: {Math.round(classRef.current.sensitivityThreshold * 100)}%</div>
+              <div>cycle: {debugInfo.cycle} · busy: <span className={debugInfo.proc ? 'text-red-400' : 'text-green-400'}>{String(debugInfo.proc)}</span></div>
               <div>result: <span className="text-white">{debugInfo.result || '—'}</span></div>
               <div>last alert: <span className={recentAlerts.length ? 'text-green-400' : 'text-white/50'}>
                 {recentAlerts.length ? `${recentAlerts[0].rawLabel || recentAlerts[0].soundType} @ ${recentAlerts[0].time}` : 'none yet'}
