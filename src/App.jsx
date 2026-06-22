@@ -279,13 +279,19 @@ class YamNetClassifier {
           .map((score, i) => {
             const label = this.customLabels[i] || `class_${i}`;
             return { className: label, confidence: score, category: this.customMapping[label] || null };
-          })
-          .sort((a, b) => b.confidence - a.confidence)
-          .slice(0, 15);
+          });
+
+        // HYBRID: ESC-50 has no fire/smoke alarm class, but YAMNet does — and its
+        // 521-class scores come from the SAME execute() call. Surface the best
+        // fire/smoke-alarm score so a smoke detector still triggers a critical alert.
+        const firePred = await this._yamnetFireAlarmPrediction(arr, embeddings);
+        if (firePred) predictions.push(firePred);
+
+        predictions.sort((a, b) => b.confidence - a.confidence);
 
         logits.dispose();
         meanProbs.dispose();
-        return { predictions, processingTime };
+        return { predictions: predictions.slice(0, 15), processingTime };
       }
 
       // ---- Stock YAMNet (521 AudioSet classes) ----
@@ -311,6 +317,28 @@ class YamNetClassifier {
       if (Array.isArray(outputs)) outputs.forEach(t => t.dispose());
       else outputs.dispose();
     }
+  }
+
+  // From YAMNet's 521-class scores (already computed in the same execute call),
+  // return the strongest fire/smoke-alarm prediction, or null. Lets the custom
+  // ESC-50 model still catch the most safety-critical sound it wasn't trained on.
+  async _yamnetFireAlarmPrediction(outputArr, embeddings) {
+    const n = this.classNames.length;
+    const scoresT = outputArr.find(t => t !== embeddings && t.shape[t.shape.length - 1] === n);
+    if (!scoresT) return null;
+
+    const ms = scoresT.mean(0);
+    const sd = await ms.data();
+    ms.dispose();
+
+    let best = { conf: 0, name: '' };
+    for (let i = 0; i < sd.length; i++) {
+      if (matchAudioSetLabel(this.classNames[i] || '') === 'fire_alarm' && sd[i] > best.conf) {
+        best = { conf: sd[i], name: this.classNames[i] };
+      }
+    }
+    if (best.conf <= 0) return null;
+    return { className: best.name, confidence: best.conf, category: 'fire_alarm' };
   }
 }
 
@@ -368,42 +396,11 @@ class ServiceManager {
       this.geminiStatus = 'ready';
     }
 
-    if (onStatusChange) onStatusChange({ ...this.services }, 'checking');
-
-    // Ping HF to see if API is reachable
-    try {
-      const headers = { 'Content-Type': 'audio/wav' };
-      if (this.apiKey) headers['Authorization'] = `Bearer ${this.apiKey}`;
-
-      // Tiny 0.1s silent WAV just to check connectivity / model status
-      const silentSamples = new Float32Array(1600).fill(0);
-      const wav = encodeWAV(silentSamples, 16000);
-
-      const res = await fetch(DetectionConfig.hfEndpoint, {
-        method: 'POST', headers, body: wav,
-        signal: AbortSignal.timeout(8000),
-      });
-
-      if (res.status === 200 || res.status === 400) {
-        this.services.hfApi = true;
-        this.hfStatus = 'ready';
-      } else if (res.status === 503) {
-        const body = await res.json().catch(() => ({}));
-        this.services.hfApi = true;
-        this.hfStatus = 'warming';
-        console.log(`⏳ HF model warming up (~${Math.round(body.estimated_time || 20)}s)`);
-      } else if (res.status === 429) {
-        this.services.hfApi = true;
-        this.hfStatus = 'rate_limited';
-      } else {
-        this.hfStatus = 'offline';
-      }
-    } catch (_) {
-      this.hfStatus = 'offline';
-    }
-
+    // This build classifies sounds on-device with YAMNet — no Hugging Face ping.
+    // Gemini (if configured) is used only for optional transcription.
+    this.hfStatus = 'offline';
     if (onStatusChange) onStatusChange({ ...this.services }, this.hfStatus);
-    return this.hfStatus !== 'offline' || this.geminiStatus === 'ready';
+    return true;
   }
 
   getServiceStatus() { return { ...this.services }; }
@@ -553,16 +550,18 @@ class SoundClassifier {
     this.isProcessing = true;
     if (this.onProcessingChange) this.onProcessingChange(true);
     try {
-      // 1. YAMNet — on-device, purpose-built for sound classification (PRIMARY)
+      // On-device model (YAMNet / custom ESC-50) is the ONLY alert classifier.
+      // Its answer is authoritative — null means "no alert-worthy sound".
+      // The old frequency-analysis heuristic is intentionally NOT used for alerts:
+      // it invented false "Screaming/Emergency" hits from ordinary room noise.
       if (this.yamnet?.status === 'ready' && audioBuffer) {
-        const result = await this.classifyWithYamNet(audioBuffer);
-        if (result) return result;
+        return await this.classifyWithYamNet(audioBuffer);
       }
-      // 2. Frequency analysis — always available, last resort
-      return this.classifyWithFrequencyAnalysis(freqData);
+      // Model not ready (loading/idle/error) — stay silent, never guess.
+      return null;
     } catch (e) {
       console.warn('Classification error:', e.message);
-      return this.classifyWithFrequencyAnalysis(freqData);
+      return null;
     } finally {
       this.isProcessing = false;
       if (this.onProcessingChange) this.onProcessingChange(false);
@@ -576,13 +575,19 @@ class SoundClassifier {
 
     if (this.onTopPredictionsUpdate) this.onTopPredictionsUpdate(predictions);
 
+    // Log the raw top predictions every cycle, inline (helps inspect/compare models)
+    const engine = this.yamnet.useCustom ? 'Custom ESC-50' : 'YAMNet';
+    const topStr = predictions.slice(0, 3)
+      .map(p => `${p.className} ${Math.round(p.confidence * 100)}%${p.category ? `→${p.category}` : ''}`)
+      .join('  |  ');
+    console.log(`🔎 ${engine} (${processingTime}) [thr ${Math.round(this.sensitivityThreshold * 100)}%]:  ${topStr}`);
+
     const best = predictions.find(
       p => p.category && p.confidence >= this.sensitivityThreshold
     );
     if (!best) return null;
 
-    const engine = this.yamnet.useCustom ? 'Custom ESC-50' : 'YAMNet';
-    console.log(`✅ ${engine}: ${best.className} (${Math.round(best.confidence * 100)}%) in ${processingTime}`);
+    console.log(`✅ ${engine} ALERT → ${best.className} (${Math.round(best.confidence * 100)}%) → ${best.category}`);
     return {
       soundType:      best.category,
       rawLabel:       best.className,   // e.g. "Police car (siren)", "Glass", "Baby cry"
@@ -1132,6 +1137,7 @@ const HearoApp = () => {
   useEffect(() => {
     init();
     return () => cleanup();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const init = async () => {
@@ -1232,12 +1238,17 @@ const HearoApp = () => {
   const startListening = async () => {
     if (listeningRef.current || isStartingRef.current) return;
 
-    // Request notification permission here — must be inside a user gesture
-    await alertRef.current.requestNotificationPermission();
-
+    // Set guards FIRST so a second click during any await can't double-start
+    // (which would leak duplicate audio streams / intervals and break Stop).
     isStartingRef.current = true;
     setIsStarting(true);
     listeningRef.current = true;
+
+    // Request notification permission (must be inside a user gesture)
+    try { await alertRef.current.requestNotificationPermission(); } catch (_) {}
+
+    // Bail if the user already pressed Stop while the prompt was open
+    if (!listeningRef.current) { setIsStarting(false); isStartingRef.current = false; return; }
 
     const ok = await audioRef.current.initialize();
 
@@ -1277,8 +1288,10 @@ const HearoApp = () => {
     try { classRef.current.abort(); } catch (_) {}   // cancel in-flight Gemini/HF fetch
     try { audioRef.current.stop(); } catch (_) {}
     try { transcriberRef.current.stop(); } catch (_) {}
+    try { transcriberRef.current.clearTranscript(); } catch (_) {}  // clean slate on stop
     if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
     setLivePreds([]);
+    setTranscriptLines([]);
     setInterimText('');
     setWarmingUp(false);
   };
@@ -1521,7 +1534,16 @@ const HearoApp = () => {
 
         {/* Recent Alerts */}
         <div className="bg-[#1E3FB8]/30 rounded-2xl p-6 border border-white/10">
-          <h3 className="text-xl font-bold text-white mb-4">Recent Alerts</h3>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-xl font-bold text-white">Recent Alerts</h3>
+            {recentAlerts.length > 0 && (
+              <button
+                onClick={() => { localStorage.removeItem('hearo_alerts'); setRecentAlerts([]); }}
+                className="text-xs px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 hover:text-white/90 transition-all">
+                Clear history
+              </button>
+            )}
+          </div>
           {recentAlerts.length === 0
             ? <p className="text-white/50 text-sm text-center py-4">No alerts yet — press Start to begin listening.</p>
             : <div className="space-y-3">
