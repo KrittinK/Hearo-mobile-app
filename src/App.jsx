@@ -1601,53 +1601,6 @@ const HearoApp = () => {
           </div>
         )}
 
-        {/* Recent Alerts */}
-        <div className="bg-[#1E3FB8]/30 rounded-2xl p-6 border border-white/10">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-xl font-bold text-white">Recent Alerts</h3>
-            {recentAlerts.length > 0 && (
-              <button
-                onClick={() => { localStorage.removeItem('hearo_alerts'); setRecentAlerts([]); }}
-                className="text-xs px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 hover:text-white/90 transition-all">
-                Clear history
-              </button>
-            )}
-          </div>
-          {recentAlerts.length === 0
-            ? <p className="text-white/50 text-sm text-center py-4">No alerts yet — press Start to begin listening.</p>
-            : <div className="space-y-3">
-                {recentAlerts.slice(0, 5).map(alert => (
-                  <div key={alert.id} className="flex items-center justify-between p-4 bg-white/5 rounded-xl"
-                    style={{ borderLeft: `4px solid ${UIUtils.getSeverityColor(alert.severity)}` }}>
-                    <div className="flex items-center space-x-4">
-                      <div className={`p-2 rounded-lg ${
-                        alert.severity === 'critical' ? 'bg-red-500/20' : alert.severity === 'high' ? 'bg-[#FFE600]/20' : 'bg-[#00A8E1]/20'
-                      }`}>{UIUtils.getAlertIcon(alert.type)}</div>
-                      <div>
-                        <p className="font-semibold text-white">
-                          {alert.rawLabel || UIUtils.getAlertText(alert.soundType) || UIUtils.getAlertText(alert.type)}
-                        </p>
-                        <div className="flex items-center gap-1.5 mt-0.5">
-                          <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
-                            alert.severity === 'critical' ? 'bg-red-500/20 text-red-300' :
-                            alert.severity === 'high'     ? 'bg-[#FFE600]/20 text-[#FFE600]' :
-                                                           'bg-[#00A8E1]/20 text-[#00A8E1]'
-                          }`}>{UIUtils.getAlertText(alert.type)}</span>
-                          <span className="text-xs text-white/50">{alert.location}</span>
-                        </div>
-                        <p className="text-xs text-[#00A8E1] mt-0.5">{alert.confidence}% • {alert.source}</p>
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <p className="font-mono text-white">{alert.time}</p>
-                      <Vibrate className="w-4 h-4 text-white/50 ml-auto mt-1" />
-                    </div>
-                  </div>
-                ))}
-              </div>
-          }
-        </div>
-
         {/* Somchai */}
         <div className="bg-[#00A8E1]/10 border-2 border-[#00A8E1]/30 rounded-2xl p-6">
           <div className="flex items-start space-x-3 mb-4">
