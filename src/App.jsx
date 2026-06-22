@@ -1117,6 +1117,7 @@ const HearoApp = () => {
   const [scenarioStep, setScenarioStep]     = useState(0);
   const [warmingUp, setWarmingUp]           = useState(false);
   const [isStarting, setIsStarting]         = useState(false);
+  const [debugInfo, setDebugInfo]           = useState(null); // on-device diagnostics
 
   const [transcriptLines, setTranscriptLines]   = useState([]);
   const [interimText, setInterimText]           = useState('');
@@ -1203,14 +1204,17 @@ const HearoApp = () => {
   const runDetection = async () => {
     if (!listeningRef.current) return;
     const level = audioRef.current.getAudioLevel();
+    const dbg = { level, model: yamnetRef.current.status, filled: !!audioRef.current.bufferFilled };
     if (level > 10) {
       const audioBuffer = await audioRef.current.captureAudioBuffer();
+      dbg.bufLen = audioBuffer ? audioBuffer.length : 0;
       if (!listeningRef.current) return;
       const freqData = audioRef.current.getFrequencyData();
       setWarmingUp(classRef.current.warmingUp);
       // Fast mode (≤4s): sounds only — Web Speech handles transcription in parallel
       const fastMode = detectionIntervalRef.current <= 4000;
       const result = await classRef.current.classifySound(audioBuffer, freqData, fastMode);
+      dbg.result = result ? `${result.rawLabel || result.soundType} ${result.confidence}%` : 'no-alert';
       if (!listeningRef.current) return;
       setWarmingUp(false);
       setHfStatus(svcRef.current.hfStatus);
@@ -1223,7 +1227,11 @@ const HearoApp = () => {
         setTranscriptLines([...transcriberRef.current.lines.slice(-30)]);
       }
       if (result) await alertRef.current.processAlert(result);
+    } else {
+      dbg.bufLen = 0;
+      dbg.result = 'quiet (level≤10)';
     }
+    setDebugInfo(dbg);
   };
 
   const changeModelMode = (mode) => {
@@ -1396,6 +1404,17 @@ const HearoApp = () => {
           </div>
 
           <div className="mb-3"><StatusBadge /></div>
+
+          {/* On-device diagnostics — helps debug mobile capture/detection */}
+          {isListening && debugInfo && (
+            <div className="mb-3 p-3 rounded-lg bg-black/30 border border-white/10 font-mono text-[11px] text-white/80 leading-relaxed">
+              <div className="text-[#00A8E1] font-semibold mb-1">🔧 Debug</div>
+              <div>mic level: <span className={debugInfo.level > 10 ? 'text-green-400' : 'text-[#FFE600]'}>{debugInfo.level}</span> (need &gt;10)</div>
+              <div>buffer filled: <span className={debugInfo.filled ? 'text-green-400' : 'text-red-400'}>{String(debugInfo.filled)}</span> · samples: <span className={debugInfo.bufLen > 0 ? 'text-green-400' : 'text-red-400'}>{debugInfo.bufLen}</span></div>
+              <div>model: <span className={debugInfo.model === 'ready' ? 'text-green-400' : 'text-red-400'}>{debugInfo.model}</span></div>
+              <div>result: <span className="text-white">{debugInfo.result || '—'}</span></div>
+            </div>
+          )}
 
           <div className="flex items-center justify-between mb-4">
             <span className="text-white/70">
