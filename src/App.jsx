@@ -468,13 +468,19 @@ class AudioProcessor {
 
   startLevelMonitoring() {
     const arr = new Uint8Array(this.analyser.frequencyBinCount);
+    let lastEmit = 0;
     const tick = () => {
       if (!this.analyser || !this.isActive) return;
       this.analyser.getByteFrequencyData(arr);
       let sum = 0;
       for (let i = 0; i < arr.length; i++) sum += arr[i] * arr[i];
       this.audioLevel = Math.round((Math.sqrt(sum / arr.length) / 128) * 100);
-      if (this.onAudioLevelChange) this.onAudioLevelChange(this.audioLevel);
+      // Throttle React updates to ~10/sec so the UI isn't re-rendering 60fps
+      const now = performance.now();
+      if (this.onAudioLevelChange && now - lastEmit >= 100) {
+        lastEmit = now;
+        this.onAudioLevelChange(this.audioLevel);
+      }
       if (this.isActive) requestAnimationFrame(tick);
     };
     tick();
@@ -2095,9 +2101,12 @@ const HearoApp = () => {
   return (
     <div className="max-w-md mx-auto bg-[#0B1740] min-h-screen text-white">
       <div className="pb-20">
-        {currentScreen === 'home'      && <HomeScreen />}
-        {currentScreen === 'settings'  && <SettingsScreen />}
-        {currentScreen === 'emergency' && <EmergencyScreen />}
+        {/* Called as functions (not <Component/>) so they render as part of this
+            component's tree — prevents a full unmount/remount on every re-render,
+            which was making buttons need many clicks while audio level updates. */}
+        {currentScreen === 'home'      && HomeScreen()}
+        {currentScreen === 'settings'  && SettingsScreen()}
+        {currentScreen === 'emergency' && EmergencyScreen()}
       </div>
 
       <div className="fixed bottom-0 left-1/2 transform -translate-x-1/2 w-full max-w-md bg-[#0B1740] border-t border-white/10 z-50 shadow-lg">
