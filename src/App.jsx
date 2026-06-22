@@ -548,7 +548,11 @@ class SoundClassifier {
   }
 
   setSensitivity(v) {
-    this.sensitivityThreshold = Math.max(0.12, 0.55 - (v / 10) * 0.43);
+    // Lower bar than before: real-world 2s clips score lower than 5s training
+    // clips, and non-alert room noise maps to non-alert classes anyway, so a
+    // lower threshold catches real sounds without spamming false alerts.
+    // v=7 (default) → ~15%, v=10 → ~8%, v=5 → ~22%
+    this.sensitivityThreshold = Math.max(0.08, 0.40 - (v / 10) * 0.36);
     if (this.yamnet) this.yamnet.setSensitivity(v);
   }
 
