@@ -1411,8 +1411,15 @@ const HearoApp = () => {
               <div className="text-[#00A8E1] font-semibold mb-1">🔧 Debug</div>
               <div>mic level: <span className={debugInfo.level > 10 ? 'text-green-400' : 'text-[#FFE600]'}>{debugInfo.level}</span> (need &gt;10)</div>
               <div>buffer filled: <span className={debugInfo.filled ? 'text-green-400' : 'text-red-400'}>{String(debugInfo.filled)}</span> · samples: <span className={debugInfo.bufLen > 0 ? 'text-green-400' : 'text-red-400'}>{debugInfo.bufLen}</span></div>
-              <div>model: <span className={debugInfo.model === 'ready' ? 'text-green-400' : 'text-red-400'}>{debugInfo.model}</span></div>
+              <div>model: <span className={debugInfo.model === 'ready' ? 'text-green-400' : 'text-red-400'}>{debugInfo.model}</span> · thr: {Math.round(classRef.current.sensitivityThreshold * 100)}%</div>
               <div>result: <span className="text-white">{debugInfo.result || '—'}</span></div>
+              <div className="mt-1 text-white/60">top guesses:</div>
+              {liveTopPredictions.slice(0, 4).map((p, i) => (
+                <div key={i} className="pl-2">
+                  {p.className} <span className={p.confidence >= classRef.current.sensitivityThreshold ? 'text-green-400' : 'text-white/50'}>{Math.round(p.confidence * 100)}%</span>
+                  {p.category && <span className="text-[#FFE600]"> →{p.category}</span>}
+                </div>
+              ))}
             </div>
           )}
 
