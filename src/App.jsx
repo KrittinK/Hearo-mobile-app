@@ -427,6 +427,13 @@ class AudioProcessor {
         audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: true }
       });
       this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      // Mobile (Android/iOS) starts the AudioContext SUSPENDED — it must be
+      // resumed from a user gesture or onaudioprocess never fires and detection
+      // silently does nothing. This runs inside the Start-button click chain.
+      if (this.audioContext.state === 'suspended') {
+        try { await this.audioContext.resume(); } catch (_) {}
+      }
+      console.log(`🎤 AudioContext state: ${this.audioContext.state}, sampleRate: ${this.audioContext.sampleRate}`);
       const source = this.audioContext.createMediaStreamSource(this.stream);
 
       // Analyser for audio level bar
@@ -900,8 +907,11 @@ class SpeechTranscriber {
       if (this.onUpdate) this.onUpdate([...this.lines], this.interim);
     };
 
+    this.recognition.onstart = () => console.log(`🎙️ Speech recognition started (${lang})`);
+
     this.recognition.onerror = (e) => {
-      // 'no-speech' is normal — just ignore
+      // Log so mobile failures are diagnosable (was silently swallowed before)
+      console.warn(`🎙️ Speech recognition error: ${e.error}`);
       if (e.error === 'language-not-supported' && lang !== 'en-US') {
         // Fall back to English
         this.stop();
