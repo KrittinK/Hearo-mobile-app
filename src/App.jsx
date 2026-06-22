@@ -446,52 +446,23 @@ class AudioProcessor {
       const bufSize = Math.ceil(this.audioContext.sampleRate * DetectionConfig.bufferDuration);
       this.rollingBuffer = new Float32Array(bufSize);
 
-      // Writes captured samples into the rolling buffer
-      const writeSamples = (data) => {
-        if (!this.isActive || !data) return;
+      const proc = this.audioContext.createScriptProcessor(4096, 1, 1);
+      proc.onaudioprocess = (e) => {
+        if (!this.isActive) return;
+        const data = e.inputBuffer.getChannelData(0);
         for (let i = 0; i < data.length; i++) {
           this.rollingBuffer[this.bufferPos] = data[i];
           this.bufferPos = (this.bufferPos + 1) % this.rollingBuffer.length;
           if (this.bufferPos === 0) this.bufferFilled = true;
         }
       };
-
-      // Prefer AudioWorklet — ScriptProcessorNode's onaudioprocess is unreliable
-      // on Android Chromium (level meter works but the buffer never fills).
-      let captureNode = null;
-      if (this.audioContext.audioWorklet) {
-        try {
-          const workletSrc =
-            'class HearoCapture extends AudioWorkletProcessor {' +
-            '  process(inputs){ const ch = inputs[0]; if (ch && ch[0]) this.port.postMessage(ch[0]); return true; }' +
-            '}' +
-            "registerProcessor('hearo-capture', HearoCapture);";
-          const url = URL.createObjectURL(new Blob([workletSrc], { type: 'application/javascript' }));
-          await this.audioContext.audioWorklet.addModule(url);
-          URL.revokeObjectURL(url);
-          captureNode = new AudioWorkletNode(this.audioContext, 'hearo-capture');
-          captureNode.port.onmessage = (e) => writeSamples(e.data);
-          this.workletNode = captureNode;
-          console.log('🎛️ Capture via AudioWorklet');
-        } catch (err) {
-          console.warn('AudioWorklet failed, falling back to ScriptProcessor:', err.message);
-          captureNode = null;
-        }
-      }
-      if (!captureNode) {
-        const proc = this.audioContext.createScriptProcessor(4096, 1, 1);
-        proc.onaudioprocess = (e) => writeSamples(e.inputBuffer.getChannelData(0));
-        captureNode = proc;
-        this.scriptProcessor = proc;
-        console.log('🎛️ Capture via ScriptProcessor (fallback)');
-      }
-
-      // Silent gain keeps the capture node in the active graph without mic→speaker loop
+      // Silent gain: keeps ScriptProcessor in the graph (required) without looping mic → speaker
       const silentGain = this.audioContext.createGain();
       silentGain.gain.value = 0;
-      source.connect(captureNode);
-      captureNode.connect(silentGain);
+      source.connect(proc);
+      proc.connect(silentGain);
       silentGain.connect(this.audioContext.destination);
+      this.scriptProcessor = proc;
 
       this.isActive = true;
       this.startLevelMonitoring();
@@ -553,7 +524,6 @@ class AudioProcessor {
   stop() {
     this.isActive = false;
     this.analyser = null; // null before closing context so level monitor exits cleanly
-    if (this.workletNode) { try { this.workletNode.port.onmessage = null; this.workletNode.disconnect(); } catch (_) {} this.workletNode = null; }
     if (this.scriptProcessor) { try { this.scriptProcessor.disconnect(); } catch (_) {} this.scriptProcessor = null; }
     if (this.stream) { this.stream.getTracks().forEach(t => t.stop()); this.stream = null; }
     if (this.audioContext) { this.audioContext.close().catch(() => {}); this.audioContext = null; }
