@@ -1555,9 +1555,36 @@ const HearoApp = () => {
             </div>
           )}
 
-          {/* Recent Alerts — shown here at the top so they're immediately visible */}
+          <div className="flex items-center justify-between mb-4">
+            <span className="text-white/70">
+              {isListening ? 'Listening for sounds' : isStarting ? 'Starting…' : 'Not listening'}
+            </span>
+            <button
+              onClick={isListening ? stopListening : startListening}
+              disabled={isStarting}
+              className={`px-6 py-3 rounded-xl font-semibold transition-all duration-200 disabled:opacity-60 disabled:cursor-not-allowed ${
+                isListening
+                  ? 'bg-red-500 hover:bg-red-600 text-white'
+                  : isStarting
+                  ? 'bg-gray-400 text-white'
+                  : 'bg-[#FFE600] hover:bg-[#E6CF00] text-[#1E3FB8] font-bold'
+              }`}
+            >
+              {isListening ? 'Stop' : isStarting ? 'Starting…' : 'Start'}
+            </button>
+          </div>
+
+          <div className="border-t pt-4">
+            <button onClick={simulateCriticalScenario} disabled={!!emergencyScenario}
+              className="w-full px-4 py-3 bg-[#FFE600] hover:bg-[#E6CF00] disabled:bg-white/20 disabled:text-white/40 text-[#1E3FB8] rounded-lg font-bold transition-all">
+              🚨 Demo: Kitchen Fire Emergency
+            </button>
+            <p className="text-xs text-white/60 mt-2 text-center">Simulate how Hearo saves lives in critical situations</p>
+          </div>
+
+          {/* Recent Alerts — below Start/Demo */}
           {recentAlerts.length > 0 && (
-            <div className="mb-4 bg-[#1E3FB8]/30 rounded-2xl p-4 border border-white/10">
+            <div className="mt-4 bg-[#1E3FB8]/30 rounded-2xl p-4 border border-white/10">
               <div className="flex items-center justify-between gap-2 mb-3">
                 <h3 className="text-lg font-bold text-white whitespace-nowrap">🔔 Recent Alerts</h3>
                 <button
@@ -1595,33 +1622,6 @@ const HearoApp = () => {
               </div>
             </div>
           )}
-
-          <div className="flex items-center justify-between mb-4">
-            <span className="text-white/70">
-              {isListening ? 'Listening for sounds' : isStarting ? 'Starting…' : 'Not listening'}
-            </span>
-            <button
-              onClick={isListening ? stopListening : startListening}
-              disabled={isStarting}
-              className={`px-6 py-3 rounded-xl font-semibold transition-all duration-200 disabled:opacity-60 disabled:cursor-not-allowed ${
-                isListening
-                  ? 'bg-red-500 hover:bg-red-600 text-white'
-                  : isStarting
-                  ? 'bg-gray-400 text-white'
-                  : 'bg-[#FFE600] hover:bg-[#E6CF00] text-[#1E3FB8] font-bold'
-              }`}
-            >
-              {isListening ? 'Stop' : isStarting ? 'Starting…' : 'Start'}
-            </button>
-          </div>
-
-          <div className="border-t pt-4">
-            <button onClick={simulateCriticalScenario} disabled={!!emergencyScenario}
-              className="w-full px-4 py-3 bg-[#FFE600] hover:bg-[#E6CF00] disabled:bg-white/20 disabled:text-white/40 text-[#1E3FB8] rounded-lg font-bold transition-all">
-              🚨 Demo: Kitchen Fire Emergency
-            </button>
-            <p className="text-xs text-white/60 mt-2 text-center">Simulate how Hearo saves lives in critical situations</p>
-          </div>
 
           {isListening && (
             <div className="mt-4">
