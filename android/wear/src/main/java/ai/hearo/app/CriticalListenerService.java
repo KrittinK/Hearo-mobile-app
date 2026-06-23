@@ -46,13 +46,28 @@ public class CriticalListenerService extends WearableListenerService {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel ch = new NotificationChannel(
                     CHANNEL, "Critical Watch Alerts", NotificationManager.IMPORTANCE_HIGH);
-            ch.enableVibration(true);
+            // No channel vibration — AlertActivity does the strong vibration, so
+            // the notification must not add a competing gentle buzz.
+            ch.enableVibration(false);
+            ch.setSound(null, null);
             nm.createNotificationChannel(ch);
         }
 
         Intent full = new Intent(ctx, AlertActivity.class);
         full.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
         full.putExtra("body", body);
+
+        // Launch the strong-vibration activity directly. When the screen is ON,
+        // a full-screen-intent notification only shows a (gentle) heads-up
+        // instead of launching, so we start the activity ourselves. The
+        // notification below is the fallback for when the screen is off/locked.
+        try {
+            ctx.startActivity(full);
+            Log.d("HearoWear", "started AlertActivity directly");
+        } catch (Exception e) {
+            Log.w("HearoWear", "direct start blocked: " + e.getMessage());
+        }
+
         PendingIntent fsPending = PendingIntent.getActivity(ctx, 0, full,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
