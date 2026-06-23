@@ -1,0 +1,127 @@
+package ai.hearo.app;
+
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.os.Build;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
+
+import androidx.core.app.NotificationCompat;
+
+import com.getcapacitor.Plugin;
+import com.getcapacitor.PluginCall;
+import com.getcapacitor.PluginMethod;
+import com.getcapacitor.annotation.CapacitorPlugin;
+
+/**
+ * Call-style critical alert: posts a CATEGORY_CALL full-screen notification
+ * (which Wear OS rings continuously like an incoming call) and vibrates the
+ * phone with a repeating waveform until the user dismisses it.
+ *
+ * This is the one thing a web app cannot do — it requires native Android.
+ */
+@CapacitorPlugin(name = "HearoAlert")
+public class HearoAlertPlugin extends Plugin {
+
+    private static final String CHANNEL_ID = "hearo_critical";
+    private static final int NOTIF_ID = 7001;
+    private static final String ACTION_DISMISS = "ai.hearo.app.DISMISS_ALERT";
+
+    private Vibrator vibrator;
+    private BroadcastReceiver dismissReceiver;
+
+    @Override
+    public void load() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationManager nm = (NotificationManager)
+                    getContext().getSystemService(Context.NOTIFICATION_SERVICE);
+            NotificationChannel ch = new NotificationChannel(
+                    CHANNEL_ID, "Critical Alerts", NotificationManager.IMPORTANCE_HIGH);
+            ch.setDescription("Fire alarm and other life-safety sounds");
+            ch.enableVibration(true);
+            ch.setVibrationPattern(new long[]{0, 600, 300, 600});
+            nm.createNotificationChannel(ch);
+        }
+    }
+
+    @PluginMethod
+    public void ring(PluginCall call) {
+        String title = call.getString("title", "Hearo Alert");
+        String body = call.getString("body", "Critical sound detected");
+        Context ctx = getContext();
+
+        // Full-screen intent → brings the app forward like an incoming call
+        Intent fsIntent = new Intent(ctx, MainActivity.class);
+        fsIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        PendingIntent fsPending = PendingIntent.getActivity(ctx, 0, fsIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+
+        // Dismiss action → broadcast that stops everything
+        Intent dismissIntent = new Intent(ACTION_DISMISS).setPackage(ctx.getPackageName());
+        PendingIntent dismissPending = PendingIntent.getBroadcast(ctx, 1, dismissIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+
+        NotificationCompat.Builder b = new NotificationCompat.Builder(ctx, CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.ic_dialog_alert)
+                .setContentTitle(title)
+                .setContentText(body)
+                .setPriority(NotificationCompat.PRIORITY_MAX)
+                .setCategory(NotificationCompat.CATEGORY_CALL)
+                .setOngoing(true)
+                .setAutoCancel(false)
+                .setFullScreenIntent(fsPending, true)
+                .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Dismiss", dismissPending);
+
+        NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+        nm.notify(NOTIF_ID, b.build());
+
+        // Continuous phone vibration until dismissed (repeat from index 0 = forever)
+        vibrator = (Vibrator) ctx.getSystemService(Context.VIBRATOR_SERVICE);
+        long[] timings = {0, 600, 400};
+        if (vibrator != null) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator.vibrate(VibrationEffect.createWaveform(timings, 0));
+            } else {
+                vibrator.vibrate(timings, 0);
+            }
+        }
+
+        registerDismiss();
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void stop(PluginCall call) {
+        clearAll();
+        call.resolve();
+    }
+
+    private void registerDismiss() {
+        if (dismissReceiver != null) return;
+        dismissReceiver = new BroadcastReceiver() {
+            @Override public void onReceive(Context c, Intent i) { clearAll(); }
+        };
+        IntentFilter filter = new IntentFilter(ACTION_DISMISS);
+        if (Build.VERSION.SDK_INT >= 33) {
+            getContext().registerReceiver(dismissReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            getContext().registerReceiver(dismissReceiver, filter);
+        }
+    }
+
+    private void clearAll() {
+        if (vibrator != null) { vibrator.cancel(); vibrator = null; }
+        NotificationManager nm = (NotificationManager)
+                getContext().getSystemService(Context.NOTIFICATION_SERVICE);
+        nm.cancel(NOTIF_ID);
+        if (dismissReceiver != null) {
+            try { getContext().unregisterReceiver(dismissReceiver); } catch (Exception ignored) {}
+            dismissReceiver = null;
+        }
+    }
+}

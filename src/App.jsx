@@ -1,7 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Bell, Home, Settings, Shield, Phone, Baby, Car, AlertTriangle, Volume2, VolumeX, Smartphone, Watch, Lightbulb, Vibrate, Users, Wifi, Cpu, BarChart2, Activity, Key } from 'lucide-react';
 import * as tf from '@tensorflow/tfjs';
+import { Capacitor, registerPlugin } from '@capacitor/core';
 import hearoLogo from './images/Hearo.png';
+
+// Native call-style alert plugin (only real on the Android APK build).
+// On the web this proxy exists but isNativePlatform() is false, so we
+// never call it and fall back to the web notification/vibration loop.
+const HearoAlert = registerPlugin('HearoAlert');
+const IS_NATIVE = Capacitor.isNativePlatform();
 
 // ==================== CONFIGURATION ====================
 const DetectionConfig = {
@@ -1020,6 +1027,18 @@ class AlertProcessor {
     setTimeout(() => { document.body.style.backgroundColor = ''; }, 300);
     this.playTone(alert.severity);
 
+    // Native APK + critical → true call-style ring (rings phone AND watch
+    // continuously until dismissed). Skips the web loop entirely.
+    if (IS_NATIVE && alert.severity === 'critical') {
+      try {
+        HearoAlert.ring({
+          title: `Hearo: ${alert.soundType.replace(/_/g, ' ')}`,
+          body: `${alert.location} — ${alert.confidence}% confidence`,
+        });
+        return;
+      } catch (_) { /* fall through to web behavior */ }
+    }
+
     // Phone haptic pattern (the watch ignores the pattern, see below)
     const p = this.vibrationPattern(alert.severity);
     if ('vibrate' in navigator) navigator.vibrate(p);
@@ -1078,6 +1097,7 @@ class AlertProcessor {
   }
 
   stopAlertHaptics() {
+    if (IS_NATIVE) { try { HearoAlert.stop(); } catch (_) {} }
     if (this._alertInterval) {
       clearInterval(this._alertInterval);
       this._alertInterval = null;
