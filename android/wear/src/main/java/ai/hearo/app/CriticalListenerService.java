@@ -6,6 +6,7 @@ import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
+import android.util.Log;
 
 import androidx.core.app.NotificationCompat;
 
@@ -27,6 +28,7 @@ public class CriticalListenerService extends WearableListenerService {
     @Override
     public void onMessageReceived(MessageEvent event) {
         final String path = event.getPath();
+        Log.d("HearoWear", "onMessageReceived path=" + path);
         if (PATH_CRITICAL.equals(path)) {
             showFullScreenAlert(new String(event.getData()));
         } else if (PATH_STOP.equals(path)) {

@@ -12,6 +12,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
+import android.util.Log;
 
 import androidx.core.app.NotificationCompat;
 
@@ -222,10 +223,15 @@ public class HearoAlertPlugin extends Plugin {
         new Thread(() -> {
             try {
                 byte[] data = payload == null ? new byte[0] : payload.getBytes();
-                for (Node node : Tasks.await(Wearable.getNodeClient(ctx).getConnectedNodes())) {
+                java.util.List<Node> nodes = Tasks.await(Wearable.getNodeClient(ctx).getConnectedNodes());
+                Log.d("HearoAlert", "sendToWatch path=" + path + " nodes=" + nodes.size());
+                for (Node node : nodes) {
                     Tasks.await(Wearable.getMessageClient(ctx).sendMessage(node.getId(), path, data));
+                    Log.d("HearoAlert", "sent '" + path + "' to " + node.getDisplayName());
                 }
-            } catch (Exception ignored) {}
+            } catch (Exception e) {
+                Log.w("HearoAlert", "sendToWatch failed: " + e.getMessage());
+            }
         }).start();
     }
 }
