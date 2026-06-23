@@ -580,36 +580,14 @@ class SoundClassifier {
     }
   }
 
+  // Returns { predictions, processingTime } — the alert decision is made by the
+  // caller (runDetection) so it renders live and can't be lost mid-classify.
   async classifyWithYamNet(audioBuffer) {
     const result = await this.yamnet.classify(audioBuffer);
     if (!result) return null;
     const { predictions, processingTime } = result;
-
     if (this.onTopPredictionsUpdate) this.onTopPredictionsUpdate(predictions);
-
-    // Log the raw top predictions every cycle, inline (helps inspect/compare models)
-    const engine = this.yamnet.useCustom ? 'Custom ESC-50' : 'YAMNet';
-    const topStr = predictions.slice(0, 3)
-      .map(p => `${p.className} ${Math.round(p.confidence * 100)}%${p.category ? `→${p.category}` : ''}`)
-      .join('  |  ');
-    console.log(`🔎 ${engine} (${processingTime}) [thr ${Math.round(this.sensitivityThreshold * 100)}%]:  ${topStr}`);
-
-    const best = predictions.find(
-      p => p.category && p.confidence >= this.sensitivityThreshold
-    );
-    const p0 = predictions[0];
-    this.lastDecision = `top=${p0?.className} cat=${p0?.category || 'none'} conf=${(p0?.confidence || 0).toFixed(2)} best=${best ? best.className : 'NULL'}`;
-    if (!best) return null;
-
-    console.log(`✅ ${engine} ALERT → ${best.className} (${Math.round(best.confidence * 100)}%) → ${best.category}`);
-    return {
-      soundType:      best.category,
-      rawLabel:       best.className,   // e.g. "Police car (siren)", "Glass", "Baby cry"
-      confidence:     Math.round(best.confidence * 100),
-      source:         this.yamnet.useCustom ? 'Custom ESC-50 (on-device)' : 'YAMNet (on-device)',
-      processingTime,
-      topPredictions: predictions,
-    };
+    return { predictions, processingTime };
   }
 
   async classifyWithGemini(audioBuffer, fastMode = false) {
@@ -1220,25 +1198,32 @@ const HearoApp = () => {
       setWarmingUp(classRef.current.warmingUp);
       // Fast mode (≤4s): sounds only — Web Speech handles transcription in parallel
       const fastMode = detectionIntervalRef.current <= 4000;
-      const result = await classRef.current.classifySound(audioBuffer, freqData, fastMode);
-      dbg.result = result ? `${result.rawLabel || result.soundType} ${result.confidence}%` : 'no-alert';
-      dbg.decision = classRef.current.lastDecision;
+      const out = await classRef.current.classifySound(audioBuffer, freqData, fastMode);
       dbg.err = classRef.current.lastError;
       if (!listeningRef.current) return;
       setWarmingUp(false);
       setHfStatus(svcRef.current.hfStatus);
-      if (result?.transcript) {
-        transcriberRef.current.lines.push({
-          text: result.transcript,
-          time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-          confidence: result.transcriptConfidence || 90,
-        });
-        setTranscriptLines([...transcriberRef.current.lines.slice(-30)]);
-      }
-      if (result) {
-        const alertData = await alertRef.current.processAlert(result);
-        // Update the visible list HERE (same scope as setDebugInfo, which renders
-        // live) rather than relying on the onAlertGenerated callback.
+
+      // Decide the alert HERE from the returned predictions — same logic the
+      // debug "would-fire" line uses, and it renders live in this same scope.
+      const preds = out?.predictions || [];
+      const thr = classRef.current.sensitivityThreshold;
+      const best = preds.find(p => p.category && p.confidence >= thr);
+      const p0 = preds[0];
+      dbg.decision = p0 ? `top=${p0.className} cat=${p0.category || 'none'} conf=${(p0.confidence || 0).toFixed(2)} best=${best ? best.className : 'NULL'}` : '—';
+      dbg.result = best ? `${best.className} ${Math.round(best.confidence * 100)}%` : 'no-alert';
+
+      if (best) {
+        const alertResult = {
+          soundType:      best.category,
+          rawLabel:       best.className,
+          confidence:     Math.round(best.confidence * 100),
+          source:         yamnetRef.current.useCustom ? 'Custom ESC-50 (on-device)' : 'YAMNet (on-device)',
+          processingTime: out.processingTime,
+          topPredictions: preds,
+        };
+        console.log(`✅ ALERT → ${best.className} ${Math.round(best.confidence * 100)}% → ${best.category}`);
+        const alertData = await alertRef.current.processAlert(alertResult);
         if (alertData) setRecentAlerts(prev => [alertData, ...prev.slice(0, 9)]);
       }
     } else {
