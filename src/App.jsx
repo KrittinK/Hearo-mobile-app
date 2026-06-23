@@ -578,6 +578,7 @@ class SoundClassifier {
       return null;
     } catch (e) {
       console.warn('Classification error:', e.message);
+      this.lastError = e.message;   // surface swallowed errors in debug
       return null;
     } finally {
       this.isProcessing = false;
@@ -602,6 +603,8 @@ class SoundClassifier {
     const best = predictions.find(
       p => p.category && p.confidence >= this.sensitivityThreshold
     );
+    const p0 = predictions[0];
+    this.lastDecision = `top=${p0?.className} cat=${p0?.category || 'none'} conf=${(p0?.confidence || 0).toFixed(2)} best=${best ? best.className : 'NULL'}`;
     if (!best) return null;
 
     console.log(`✅ ${engine} ALERT → ${best.className} (${Math.round(best.confidence * 100)}%) → ${best.category}`);
@@ -1211,6 +1214,7 @@ const HearoApp = () => {
     cycleCountRef.current++;
     const level = audioRef.current.getAudioLevel();
     // proc captured at start: if a prior cycle is stuck, this reads true
+    classRef.current.lastError = null; // reset each cycle to catch fresh errors
     const dbg = { level, model: yamnetRef.current.status, filled: !!audioRef.current.bufferFilled,
                   proc: classRef.current.isProcessing, cycle: cycleCountRef.current };
     if (level > 10) {
@@ -1223,6 +1227,8 @@ const HearoApp = () => {
       const fastMode = detectionIntervalRef.current <= 4000;
       const result = await classRef.current.classifySound(audioBuffer, freqData, fastMode);
       dbg.result = result ? `${result.rawLabel || result.soundType} ${result.confidence}%` : 'no-alert';
+      dbg.decision = classRef.current.lastDecision;
+      dbg.err = classRef.current.lastError;
       if (!listeningRef.current) return;
       setWarmingUp(false);
       setHfStatus(svcRef.current.hfStatus);
@@ -1422,6 +1428,8 @@ const HearoApp = () => {
               <div>model: <span className={debugInfo.model === 'ready' ? 'text-green-400' : 'text-red-400'}>{debugInfo.model}</span> · thr: {Math.round(classRef.current.sensitivityThreshold * 100)}%</div>
               <div>cycle: {debugInfo.cycle} · busy: <span className={debugInfo.proc ? 'text-red-400' : 'text-green-400'}>{String(debugInfo.proc)}</span></div>
               <div>result: <span className="text-white">{debugInfo.result || '—'}</span></div>
+              <div>decision: <span className="text-white/80">{debugInfo.decision || '—'}</span></div>
+              {debugInfo.err && <div>err: <span className="text-red-400">{debugInfo.err}</span></div>}
               {(() => {
                 const wf = liveTopPredictions.find(p => p.category && p.confidence >= classRef.current.sensitivityThreshold);
                 return <div>would-fire: <span className={wf ? 'text-green-400' : 'text-white/50'}>{wf ? `${wf.className} ${Math.round(wf.confidence * 100)}%` : 'none'}</span></div>;
