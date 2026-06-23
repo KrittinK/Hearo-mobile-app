@@ -8,6 +8,8 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 
@@ -19,11 +21,12 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
 /**
- * Call-style critical alert: posts a CATEGORY_CALL full-screen notification
- * (which Wear OS rings continuously like an incoming call) and vibrates the
- * phone with a repeating waveform until the user dismisses it.
+ * Critical alert: re-posts a high-priority notification every few seconds
+ * (so it bridges to Wear OS and re-buzzes the watch on each post) and vibrates
+ * the phone with a repeating waveform — continuous until the user dismisses it.
  *
- * This is the one thing a web app cannot do — it requires native Android.
+ * Note: CATEGORY_CALL notifications do NOT mirror to Wear OS (the watch expects
+ * calls via telephony), so we use a repeating normal notification instead.
  */
 @CapacitorPlugin(name = "HearoAlert")
 public class HearoAlertPlugin extends Plugin {
@@ -33,8 +36,12 @@ public class HearoAlertPlugin extends Plugin {
     private static final int NOTIF_ID = 7001;
     private static final String ACTION_DISMISS = "ai.hearo.app.DISMISS_ALERT";
 
+    private static final long REPEAT_MS = 3000;
+
     private Vibrator vibrator;
     private BroadcastReceiver dismissReceiver;
+    private Handler repeatHandler;
+    private Runnable repeatRunnable;
 
     @Override
     public void load() {
@@ -87,34 +94,11 @@ public class HearoAlertPlugin extends Plugin {
 
     @PluginMethod
     public void ring(PluginCall call) {
-        String title = call.getString("title", "Hearo Alert");
-        String body = call.getString("body", "Critical sound detected");
-        Context ctx = getContext();
+        final String title = call.getString("title", "Hearo Alert");
+        final String body = call.getString("body", "Critical sound detected");
+        final Context ctx = getContext();
 
-        // Full-screen intent → brings the app forward like an incoming call
-        Intent fsIntent = new Intent(ctx, MainActivity.class);
-        fsIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        PendingIntent fsPending = PendingIntent.getActivity(ctx, 0, fsIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-
-        // Dismiss action → broadcast that stops everything
-        Intent dismissIntent = new Intent(ACTION_DISMISS).setPackage(ctx.getPackageName());
-        PendingIntent dismissPending = PendingIntent.getBroadcast(ctx, 1, dismissIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-
-        NotificationCompat.Builder b = new NotificationCompat.Builder(ctx, CHANNEL_ID)
-                .setSmallIcon(android.R.drawable.ic_dialog_alert)
-                .setContentTitle(title)
-                .setContentText(body)
-                .setPriority(NotificationCompat.PRIORITY_MAX)
-                .setCategory(NotificationCompat.CATEGORY_CALL)
-                .setOngoing(true)
-                .setAutoCancel(false)
-                .setFullScreenIntent(fsPending, true)
-                .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Dismiss", dismissPending);
-
-        NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
-        nm.notify(NOTIF_ID, b.build());
+        registerDismiss();
 
         // Continuous phone vibration until dismissed (repeat from index 0 = forever)
         vibrator = (Vibrator) ctx.getSystemService(Context.VIBRATOR_SERVICE);
@@ -127,8 +111,47 @@ public class HearoAlertPlugin extends Plugin {
             }
         }
 
-        registerDismiss();
+        // CATEGORY_CALL notifications are NOT mirrored to Wear OS (the watch
+        // expects calls via telephony). So instead, RE-POST a normal high-
+        // priority notification every few seconds: it bridges to the watch and
+        // re-buzzes it on each post — continuous until the user dismisses.
+        repeatHandler = new Handler(Looper.getMainLooper());
+        repeatRunnable = new Runnable() {
+            @Override public void run() {
+                postCriticalNotification(ctx, title, body);
+                repeatHandler.postDelayed(this, REPEAT_MS);
+            }
+        };
+        repeatHandler.post(repeatRunnable); // fire immediately, then every REPEAT_MS
+
         call.resolve();
+    }
+
+    private void postCriticalNotification(Context ctx, String title, String body) {
+        Intent open = new Intent(ctx, MainActivity.class);
+        open.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        PendingIntent openPending = PendingIntent.getActivity(ctx, 0, open,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+
+        Intent dismissIntent = new Intent(ACTION_DISMISS).setPackage(ctx.getPackageName());
+        PendingIntent dismissPending = PendingIntent.getBroadcast(ctx, 1, dismissIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+
+        NotificationCompat.Builder b = new NotificationCompat.Builder(ctx, CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.ic_dialog_alert)
+                .setContentTitle(title)
+                .setContentText(body)
+                .setPriority(NotificationCompat.PRIORITY_MAX)
+                .setCategory(NotificationCompat.CATEGORY_ALARM)
+                .setOngoing(true)
+                .setAutoCancel(false)
+                .setOnlyAlertOnce(false)   // re-alert (re-buzz watch) on every re-post
+                .setLocalOnly(false)       // allow bridging to the watch
+                .setContentIntent(openPending)
+                .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Dismiss", dismissPending);
+
+        NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+        nm.notify(NOTIF_ID, b.build());
     }
 
     @PluginMethod
@@ -151,6 +174,11 @@ public class HearoAlertPlugin extends Plugin {
     }
 
     private void clearAll() {
+        if (repeatHandler != null && repeatRunnable != null) {
+            repeatHandler.removeCallbacks(repeatRunnable);
+            repeatHandler = null;
+            repeatRunnable = null;
+        }
         if (vibrator != null) { vibrator.cancel(); vibrator = null; }
         NotificationManager nm = (NotificationManager)
                 getContext().getSystemService(Context.NOTIFICATION_SERVICE);
