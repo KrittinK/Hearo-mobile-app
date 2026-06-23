@@ -1014,26 +1014,51 @@ class AlertProcessor {
   }
 
   triggerLocalAlert(alert) {
+    this.stopAlertHaptics(); // cancel any previous loop (phone + watch)
+
     document.body.style.backgroundColor = this.severityColor(alert.severity);
     setTimeout(() => { document.body.style.backgroundColor = ''; }, 300);
-    if ('vibrate' in navigator) {
-      this.stopCriticalVibration(); // cancel any previous critical loop
-      const p = this.vibrationPattern(alert.severity);
-      navigator.vibrate(p);
-      if (alert.severity === 'critical') {
-        const loopMs = p.reduce((a, b) => a + b, 0) + 200;
-        this._criticalInterval = setInterval(() => navigator.vibrate(p), loopMs);
-      }
-    }
     this.playTone(alert.severity);
-    if ('Notification' in window && Notification.permission === 'granted') {
+
+    // Phone haptic pattern (the watch ignores the pattern, see below)
+    const p = this.vibrationPattern(alert.severity);
+    if ('vibrate' in navigator) navigator.vibrate(p);
+
+    const notify = (n) => {
+      if (!('Notification' in window) || Notification.permission !== 'granted') return;
       this._showNotification(`Hearo: ${alert.soundType.replace(/_/g, ' ')}`, {
         body: `${alert.location} — ${alert.confidence}% confidence`,
         icon: '/logo192.png', badge: '/favicon.ico',
         tag: 'hearo-alert',
+        renotify: true,          // re-alert (re-buzz the watch) on each re-fire
         requireInteraction: alert.severity === 'critical',
-        vibrate: this.vibrationPattern(alert.severity),
+        vibrate: p,
       });
+    };
+
+    // Wear OS can't receive a custom haptic waveform from a web app — it plays
+    // one default buzz per notification. So we encode each severity as a *buzz
+    // cadence* by re-firing the notification: the phone re-vibrates and the
+    // watch re-buzzes once per fire.
+    //  critical → non-stop until dismissed   high → 3   medium → 2   low → 1
+    notify();
+    const loopMs = p.reduce((a, b) => a + b, 0) + 600;
+    if (alert.severity === 'critical') {
+      this._alertInterval = setInterval(() => {
+        if ('vibrate' in navigator) navigator.vibrate(p);
+        notify();
+      }, loopMs);
+    } else {
+      const buzzes = { high: 3, medium: 2, low: 1 }[alert.severity] || 1;
+      let count = 1;
+      if (buzzes > 1) {
+        this._alertInterval = setInterval(() => {
+          if (count >= buzzes) { this.stopAlertHaptics(); return; }
+          count++;
+          if ('vibrate' in navigator) navigator.vibrate(p);
+          notify();
+        }, loopMs);
+      }
     }
   }
 
@@ -1050,12 +1075,18 @@ class AlertProcessor {
     }[s] || [200, 100, 200];
   }
 
-  stopCriticalVibration() {
-    if (this._criticalInterval) {
-      clearInterval(this._criticalInterval);
-      this._criticalInterval = null;
+  stopAlertHaptics() {
+    if (this._alertInterval) {
+      clearInterval(this._alertInterval);
+      this._alertInterval = null;
     }
     if ('vibrate' in navigator) navigator.vibrate(0);
+    // Clear the watch/system notification so it stops re-alerting
+    try {
+      navigator.serviceWorker?.ready.then(reg =>
+        reg.getNotifications({ tag: 'hearo-alert' }).then(ns => ns.forEach(n => n.close()))
+      );
+    } catch (_) {}
   }
 
   playTone(severity) {
@@ -1359,7 +1390,7 @@ const HearoApp = () => {
     try { transcriberRef.current.stop(); } catch (_) {}
     try { transcriberRef.current.clearTranscript(); } catch (_) {}  // clean slate on stop
     if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
-    try { alertRef.current.stopCriticalVibration(); } catch (_) {}
+    try { alertRef.current.stopAlertHaptics(); } catch (_) {}
     setLivePreds([]);
     setTranscriptLines([]);
     setInterimText('');
@@ -1485,7 +1516,7 @@ const HearoApp = () => {
             <div className="mb-3 p-3 rounded-lg bg-[#FFE600]/5 border border-[#FFE600]/20">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-sm font-bold text-[#FFE600]">🔔 Recent Alerts ({recentAlerts.length})</span>
-                <button onClick={() => { localStorage.removeItem('hearo_alerts'); setRecentAlerts([]); alertRef.current.stopCriticalVibration(); }}
+                <button onClick={() => { localStorage.removeItem('hearo_alerts'); setRecentAlerts([]); alertRef.current.stopAlertHaptics(); }}
                   className="text-xs px-2 py-1 rounded bg-white/5 text-white/60">Clear</button>
               </div>
               <div className="space-y-1.5">
