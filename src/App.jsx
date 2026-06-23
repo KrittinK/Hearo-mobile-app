@@ -1042,12 +1042,14 @@ class AlertProcessor {
     // watch re-buzzes once per fire.
     //  critical → non-stop until dismissed   high → 3   medium → 2   low → 1
     notify();
-    const loopMs = p.reduce((a, b) => a + b, 0) + 600;
+    const patMs = p.reduce((a, b) => a + b, 0);
     if (alert.severity === 'critical') {
+      // Near-continuous: re-fire with only a tiny gap so the phone feels like
+      // a non-stop ring, and the watch re-buzzes as often as it'll allow.
       this._alertInterval = setInterval(() => {
         if ('vibrate' in navigator) navigator.vibrate(p);
         notify();
-      }, loopMs);
+      }, patMs + 150);
     } else {
       const buzzes = { high: 3, medium: 2, low: 1 }[alert.severity] || 1;
       let count = 1;
@@ -1057,7 +1059,7 @@ class AlertProcessor {
           count++;
           if ('vibrate' in navigator) navigator.vibrate(p);
           notify();
-        }, loopMs);
+        }, patMs + 400); // distinct, countable buzzes
       }
     }
   }
