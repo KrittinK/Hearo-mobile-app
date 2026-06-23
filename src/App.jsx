@@ -1130,6 +1130,7 @@ const HearoApp = () => {
   const listeningRef   = useRef(false);
   const isStartingRef  = useRef(false);
   const cycleCountRef  = useRef(0); // detection cycles (debug)
+  const firedCountRef  = useRef(0); // alerts fired (debug)
 
   useEffect(() => {
     init();
@@ -1186,8 +1187,7 @@ const HearoApp = () => {
     if (!listeningRef.current) return;
     cycleCountRef.current++;
     const level = audioRef.current.getAudioLevel();
-    // proc captured at start: if a prior cycle is stuck, this reads true
-    classRef.current.lastError = null; // reset each cycle to catch fresh errors
+    // lastError NOT reset — keep last error visible so it can't be hidden
     const dbg = { level, model: yamnetRef.current.status, filled: !!audioRef.current.bufferFilled,
                   proc: classRef.current.isProcessing, cycle: cycleCountRef.current };
     if (level > 10) {
@@ -1200,6 +1200,7 @@ const HearoApp = () => {
       const fastMode = detectionIntervalRef.current <= 4000;
       const out = await classRef.current.classifySound(audioBuffer, freqData, fastMode);
       dbg.err = classRef.current.lastError;
+      dbg.outNull = !out;                       // did classifier return nothing?
       if (!listeningRef.current) return;
       setWarmingUp(false);
       setHfStatus(svcRef.current.hfStatus);
@@ -1223,9 +1224,11 @@ const HearoApp = () => {
           topPredictions: preds,
         };
         console.log(`✅ ALERT → ${best.className} ${Math.round(best.confidence * 100)}% → ${best.category}`);
+        firedCountRef.current++;
         const alertData = await alertRef.current.processAlert(alertResult);
         if (alertData) setRecentAlerts(prev => [alertData, ...prev.slice(0, 9)]);
       }
+      dbg.fires = firedCountRef.current;
     } else {
       dbg.bufLen = 0;
       dbg.result = 'quiet (level≤10)';
@@ -1411,7 +1414,8 @@ const HearoApp = () => {
               <div>mic level: <span className={debugInfo.level > 10 ? 'text-green-400' : 'text-[#FFE600]'}>{debugInfo.level}</span> (need &gt;10)</div>
               <div>buffer filled: <span className={debugInfo.filled ? 'text-green-400' : 'text-red-400'}>{String(debugInfo.filled)}</span> · samples: <span className={debugInfo.bufLen > 0 ? 'text-green-400' : 'text-red-400'}>{debugInfo.bufLen}</span></div>
               <div>model: <span className={debugInfo.model === 'ready' ? 'text-green-400' : 'text-red-400'}>{debugInfo.model}</span> · thr: {Math.round(classRef.current.sensitivityThreshold * 100)}%</div>
-              <div>cycle: {debugInfo.cycle} · busy: <span className={debugInfo.proc ? 'text-red-400' : 'text-green-400'}>{String(debugInfo.proc)}</span></div>
+              <div>cycle: {debugInfo.cycle} · busy: <span className={debugInfo.proc ? 'text-red-400' : 'text-green-400'}>{String(debugInfo.proc)}</span> · fires: <span className="text-[#FFE600]">{debugInfo.fires ?? 0}</span></div>
+              <div>out: <span className={debugInfo.outNull ? 'text-red-400' : 'text-green-400'}>{debugInfo.outNull ? 'NULL (classifier returned nothing)' : 'ok'}</span></div>
               <div>result: <span className="text-white">{debugInfo.result || '—'}</span></div>
               <div>decision: <span className="text-white/80">{debugInfo.decision || '—'}</span></div>
               {debugInfo.err && <div>err: <span className="text-red-400">{debugInfo.err}</span></div>}
