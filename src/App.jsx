@@ -1790,7 +1790,7 @@ const HearoApp = () => {
         <p className="text-[#00A8E1] text-sm">Configure your Hearo system</p>
       </div>
 
-      <div className="p-6 space-y-6 -mt-6 pb-24">
+      <div className="p-6 space-y-6 pb-24">
 
         {/* AI Service Status */}
         <div className="bg-[#1E3FB8]/30 rounded-2xl p-6 border border-white/10 relative z-10">
