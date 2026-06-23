@@ -955,13 +955,32 @@ class AlertProcessor {
   constructor() { this.onAlertGenerated = null; }
 
   async initializeNotifications() {
-    // NOTE: requestPermission must only be called from a user gesture.
-    // This method is now a no-op — permission is requested in startListening() instead.
+    // Register service worker so Android can show real system notifications
+    if ('serviceWorker' in navigator) {
+      try {
+        await navigator.serviceWorker.register('/sw.js');
+      } catch (_) {}
+    }
   }
 
   async requestNotificationPermission() {
     if ('Notification' in window && Notification.permission === 'default') {
       await Notification.requestPermission();
+    }
+  }
+
+  async _showNotification(title, options) {
+    // Use SW registration on Android (shows in notification bar);
+    // fall back to new Notification() on desktop browsers.
+    try {
+      if ('serviceWorker' in navigator) {
+        const reg = await navigator.serviceWorker.ready;
+        await reg.showNotification(title, options);
+        return;
+      }
+    } catch (_) {}
+    if ('Notification' in window && Notification.permission === 'granted') {
+      new Notification(title, options); // eslint-disable-line no-new
     }
   }
 
@@ -1008,10 +1027,12 @@ class AlertProcessor {
     }
     this.playTone(alert.severity);
     if ('Notification' in window && Notification.permission === 'granted') {
-      new Notification(`Hearo: ${alert.soundType.replace('_', ' ')}`, {
-        body: `${alert.location} — ${alert.confidence}% confidence (${alert.source})`,
-        icon: '/favicon.ico', tag: 'hearo-alert',
+      this._showNotification(`Hearo: ${alert.soundType.replace(/_/g, ' ')}`, {
+        body: `${alert.location} — ${alert.confidence}% confidence`,
+        icon: '/logo192.png', badge: '/favicon.ico',
+        tag: 'hearo-alert',
         requireInteraction: alert.severity === 'critical',
+        vibrate: this.vibrationPattern(alert.severity),
       });
     }
   }
