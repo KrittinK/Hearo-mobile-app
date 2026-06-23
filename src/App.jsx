@@ -1514,7 +1514,7 @@ const HearoApp = () => {
         </div>
       </div>
 
-      <div className="p-6 space-y-6 -mt-6 pb-24">
+      <div className="p-6 space-y-6 pb-24">
         {/* Status Card */}
         <div className="bg-[#1E3FB8]/30 rounded-2xl p-6 border border-white/10 relative z-10">
           <div className="flex items-center justify-between mb-3">
