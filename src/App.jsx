@@ -435,11 +435,30 @@ class AudioProcessor {
     this.bufferFilled = false;
   }
 
+  async _getMicStream() {
+    // Some Android devices (notably Samsung) throw NotReadableError on the
+    // detailed constraint set — retry with progressively simpler constraints.
+    const attempts = [
+      { audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: true } },
+      { audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } },
+      { audio: true },
+    ];
+    let lastErr;
+    for (const constraints of attempts) {
+      try {
+        return await navigator.mediaDevices.getUserMedia(constraints);
+      } catch (e) {
+        lastErr = e;
+        // Brief pause lets the OS release a half-acquired mic before retrying
+        await new Promise(r => setTimeout(r, 250));
+      }
+    }
+    throw lastErr;
+  }
+
   async initialize() {
     try {
-      this.stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: true }
-      });
+      this.stream = await this._getMicStream();
       this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
       // Mobile (Android/iOS) starts the AudioContext SUSPENDED — it must be
       // resumed from a user gesture or onaudioprocess never fires and detection
