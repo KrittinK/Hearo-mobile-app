@@ -6,7 +6,7 @@ import hearoLogo from './images/Hearo.png';
 // ==================== CONFIGURATION ====================
 const DetectionConfig = {
   sampleRate: 16000,
-  bufferDuration: 2,
+  bufferDuration: 4,
   detectionInterval: 2000, // 2s — YAMNet is on-device, no rate limit
   defaultSensitivity: 7,
   // YAMNet — Google's on-device audio classifier, 521 AudioSet classes
