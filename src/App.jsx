@@ -483,6 +483,7 @@ class AudioProcessor {
       return true;
     } catch (e) {
       console.error('Audio init failed:', e);
+      this.lastInitError = `${e.name}: ${e.message}`;
       return false;
     }
   }
@@ -1379,7 +1380,7 @@ const HearoApp = () => {
 
     if (!ok) {
       listeningRef.current = false;
-      alert('Microphone access denied. Please check permissions.');
+      alert(`Mic init failed — ${audioRef.current.lastInitError || 'unknown error'}\n\nmediaDevices: ${!!navigator.mediaDevices}\ngetUserMedia: ${!!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)}\nsecureContext: ${window.isSecureContext}`);
       return;
     }
 
