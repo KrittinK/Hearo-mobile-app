@@ -998,9 +998,13 @@ class AlertProcessor {
     document.body.style.backgroundColor = this.severityColor(alert.severity);
     setTimeout(() => { document.body.style.backgroundColor = ''; }, 300);
     if ('vibrate' in navigator) {
+      this.stopCriticalVibration(); // cancel any previous critical loop
       const p = this.vibrationPattern(alert.severity);
       navigator.vibrate(p);
-      if (alert.severity === 'critical') setTimeout(() => navigator.vibrate(p), 2000);
+      if (alert.severity === 'critical') {
+        const loopMs = p.reduce((a, b) => a + b, 0) + 200;
+        this._criticalInterval = setInterval(() => navigator.vibrate(p), loopMs);
+      }
     }
     this.playTone(alert.severity);
     if ('Notification' in window && Notification.permission === 'granted') {
@@ -1018,11 +1022,19 @@ class AlertProcessor {
 
   vibrationPattern(s) {
     return {
-      critical: [0, 500, 100, 500, 100, 500, 100, 500],
-      high:     [0, 300, 150, 300, 150, 300],
-      medium:   [0, 200, 100, 200],
-      low:      [0, 150],
-    }[s] || [0, 200, 100, 200];
+      critical: [500, 100, 500, 100, 500, 100, 500],
+      high:     [300, 150, 300, 150, 300],
+      medium:   [200, 100, 200],
+      low:      [400],
+    }[s] || [200, 100, 200];
+  }
+
+  stopCriticalVibration() {
+    if (this._criticalInterval) {
+      clearInterval(this._criticalInterval);
+      this._criticalInterval = null;
+    }
+    if ('vibrate' in navigator) navigator.vibrate(0);
   }
 
   playTone(severity) {
@@ -1326,6 +1338,7 @@ const HearoApp = () => {
     try { transcriberRef.current.stop(); } catch (_) {}
     try { transcriberRef.current.clearTranscript(); } catch (_) {}  // clean slate on stop
     if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
+    try { alertRef.current.stopCriticalVibration(); } catch (_) {}
     setLivePreds([]);
     setTranscriptLines([]);
     setInterimText('');
@@ -1451,7 +1464,7 @@ const HearoApp = () => {
             <div className="mb-3 p-3 rounded-lg bg-[#FFE600]/5 border border-[#FFE600]/20">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-sm font-bold text-[#FFE600]">🔔 Recent Alerts ({recentAlerts.length})</span>
-                <button onClick={() => { localStorage.removeItem('hearo_alerts'); setRecentAlerts([]); }}
+                <button onClick={() => { localStorage.removeItem('hearo_alerts'); setRecentAlerts([]); alertRef.current.stopCriticalVibration(); }}
                   className="text-xs px-2 py-1 rounded bg-white/5 text-white/60">Clear</button>
               </div>
               <div className="space-y-1.5">
