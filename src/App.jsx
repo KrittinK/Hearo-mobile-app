@@ -572,13 +572,7 @@ class SoundClassifier {
       // The old frequency-analysis heuristic is intentionally NOT used for alerts:
       // it invented false "Screaming/Emergency" hits from ordinary room noise.
       if (this.yamnet?.status === 'ready' && audioBuffer) {
-        // Race against a timeout: on mobile a stalled WebGL read could otherwise
-        // hang here forever, leaving isProcessing stuck true and freezing all
-        // future detection (live preds frozen, every cycle = no-alert).
-        return await Promise.race([
-          this.classifyWithYamNet(audioBuffer),
-          new Promise((resolve) => setTimeout(() => resolve(null), 4000)),
-        ]);
+        return await this.classifyWithYamNet(audioBuffer);
       }
       // Model not ready (loading/idle/error) — stay silent, never guess.
       return null;
@@ -1428,6 +1422,10 @@ const HearoApp = () => {
               <div>model: <span className={debugInfo.model === 'ready' ? 'text-green-400' : 'text-red-400'}>{debugInfo.model}</span> · thr: {Math.round(classRef.current.sensitivityThreshold * 100)}%</div>
               <div>cycle: {debugInfo.cycle} · busy: <span className={debugInfo.proc ? 'text-red-400' : 'text-green-400'}>{String(debugInfo.proc)}</span></div>
               <div>result: <span className="text-white">{debugInfo.result || '—'}</span></div>
+              {(() => {
+                const wf = liveTopPredictions.find(p => p.category && p.confidence >= classRef.current.sensitivityThreshold);
+                return <div>would-fire: <span className={wf ? 'text-green-400' : 'text-white/50'}>{wf ? `${wf.className} ${Math.round(wf.confidence * 100)}%` : 'none'}</span></div>;
+              })()}
               <div>last alert: <span className={recentAlerts.length ? 'text-green-400' : 'text-white/50'}>
                 {recentAlerts.length ? `${recentAlerts[0].rawLabel || recentAlerts[0].soundType} @ ${recentAlerts[0].time}` : 'none yet'}
               </span> · total: {recentAlerts.length}</div>
