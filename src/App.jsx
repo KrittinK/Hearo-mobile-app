@@ -279,19 +279,13 @@ class YamNetClassifier {
           .map((score, i) => {
             const label = this.customLabels[i] || `class_${i}`;
             return { className: label, confidence: score, category: this.customMapping[label] || null };
-          });
-
-        // HYBRID: ESC-50 has no fire/smoke alarm class, but YAMNet does — and its
-        // 521-class scores come from the SAME execute() call. Surface the best
-        // fire/smoke-alarm score so a smoke detector still triggers a critical alert.
-        const firePred = await this._yamnetFireAlarmPrediction(arr, embeddings);
-        if (firePred) predictions.push(firePred);
-
-        predictions.sort((a, b) => b.confidence - a.confidence);
+          })
+          .sort((a, b) => b.confidence - a.confidence)
+          .slice(0, 15);
 
         logits.dispose();
         meanProbs.dispose();
-        return { predictions: predictions.slice(0, 15), processingTime };
+        return { predictions, processingTime };
       }
 
       // ---- Stock YAMNet (521 AudioSet classes) ----
@@ -1179,7 +1173,8 @@ const HearoApp = () => {
       transcriberRef.current.lines = transcriberRef.current.lines.slice(-30);
       setTranscriptLines([...transcriberRef.current.lines]);
     };
-    alertRef.current.onAlertGenerated = (a) => setRecentAlerts(prev => [a, ...prev.slice(0, 9)]);
+    // recentAlerts is now updated directly in runDetection (live re-render);
+    // onAlertGenerated left unset to avoid double-counting.
 
     // Wire up transcriber callbacks
     transcriberRef.current.onUpdate = (lines, interim) => {
@@ -1240,7 +1235,12 @@ const HearoApp = () => {
         });
         setTranscriptLines([...transcriberRef.current.lines.slice(-30)]);
       }
-      if (result) await alertRef.current.processAlert(result);
+      if (result) {
+        const alertData = await alertRef.current.processAlert(result);
+        // Update the visible list HERE (same scope as setDebugInfo, which renders
+        // live) rather than relying on the onAlertGenerated callback.
+        if (alertData) setRecentAlerts(prev => [alertData, ...prev.slice(0, 9)]);
+      }
     } else {
       dbg.bufLen = 0;
       dbg.result = 'quiet (level≤10)';
