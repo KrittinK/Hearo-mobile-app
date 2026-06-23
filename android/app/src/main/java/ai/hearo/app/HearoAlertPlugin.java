@@ -20,6 +20,11 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
+import com.google.android.gms.tasks.Tasks;
+import com.google.android.gms.wearable.MessageClient;
+import com.google.android.gms.wearable.Node;
+import com.google.android.gms.wearable.Wearable;
+
 /**
  * Critical alert: re-posts a high-priority notification every few seconds
  * (so it bridges to Wear OS and re-buzzes the watch on each post) and vibrates
@@ -37,11 +42,14 @@ public class HearoAlertPlugin extends Plugin {
     private static final String ACTION_DISMISS = "ai.hearo.app.DISMISS_ALERT";
 
     private static final long REPEAT_MS = 3000;
+    private static final String PATH_CRITICAL = "/hearo/critical";
+    private static final String PATH_STOP = "/hearo/stop";
 
     private Vibrator vibrator;
     private BroadcastReceiver dismissReceiver;
     private Handler repeatHandler;
     private Runnable repeatRunnable;
+    private MessageClient.OnMessageReceivedListener wearStopListener;
 
     @Override
     public void load() {
@@ -99,6 +107,11 @@ public class HearoAlertPlugin extends Plugin {
         final Context ctx = getContext();
 
         registerDismiss();
+
+        // Push the critical alert to the watch (strong vibration runs there) and
+        // listen for the watch's Dismiss so we can stop the phone alert too.
+        sendToWatch(PATH_CRITICAL, body);
+        registerWearStopListener();
 
         // Continuous phone vibration until dismissed (repeat from index 0 = forever)
         vibrator = (Vibrator) ctx.getSystemService(Context.VIBRATOR_SERVICE);
@@ -187,5 +200,32 @@ public class HearoAlertPlugin extends Plugin {
             try { getContext().unregisterReceiver(dismissReceiver); } catch (Exception ignored) {}
             dismissReceiver = null;
         }
+        // Tell the watch to stop, and remove the watch->phone stop listener
+        sendToWatch(PATH_STOP, "");
+        if (wearStopListener != null) {
+            Wearable.getMessageClient(getContext()).removeListener(wearStopListener);
+            wearStopListener = null;
+        }
+    }
+
+    private void registerWearStopListener() {
+        if (wearStopListener != null) return;
+        wearStopListener = event -> {
+            if (PATH_STOP.equals(event.getPath())) clearAll();
+        };
+        Wearable.getMessageClient(getContext()).addListener(wearStopListener);
+    }
+
+    // Send a message to every connected watch node (off the main thread).
+    private void sendToWatch(final String path, final String payload) {
+        final Context ctx = getContext().getApplicationContext();
+        new Thread(() -> {
+            try {
+                byte[] data = payload == null ? new byte[0] : payload.getBytes();
+                for (Node node : Tasks.await(Wearable.getNodeClient(ctx).getConnectedNodes())) {
+                    Tasks.await(Wearable.getMessageClient(ctx).sendMessage(node.getId(), path, data));
+                }
+            } catch (Exception ignored) {}
+        }).start();
     }
 }

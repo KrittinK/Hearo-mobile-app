@@ -1,0 +1,23 @@
+apply plugin: 'com.android.application'
+
+android {
+    namespace = "ai.hearo.app"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "ai.hearo.app"   // MUST match the phone app for the Wear Data Layer to pair
+        minSdkVersion 30               // Wear OS 3+ (Pixel Watch)
+        targetSdkVersion 32            // pre-13 so full-screen intent works without runtime notif permission
+        versionCode 1
+        versionName "1.0"
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+}
+
+dependencies {
+    implementation "androidx.core:core:$androidxCoreVersion"
+    implementation "com.google.android.gms:play-services-wearable:$playServicesWearableVersion"
+}
