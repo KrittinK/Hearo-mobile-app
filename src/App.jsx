@@ -117,7 +117,7 @@ class YamNetClassifier {
     this.classNames = [];       // 521 class name strings
     this.status     = 'idle';   // idle | loading | ready | error
     this.onStatusChange = null; // (status) => void
-    this.sensitivityThreshold = 0.35;
+    this.sensitivityThreshold = 0.42;
 
     // Custom fine-tuned ESC-50 head (optional, runs on YAMNet embeddings)
     this.customModel   = null;
@@ -129,7 +129,7 @@ class YamNetClassifier {
   }
 
   setSensitivity(v) {
-    this.sensitivityThreshold = Math.max(0.10, 0.55 - (v / 10) * 0.45);
+    this.sensitivityThreshold = Math.max(0.30, 0.70 - (v / 10) * 0.40);
   }
 
   // Load model + class names (call once on app start)
@@ -535,18 +535,15 @@ class SoundClassifier {
     this.isProcessing = false;
     this.onProcessingChange = null;
     this.onTopPredictionsUpdate = null;
-    this.sensitivityThreshold = 0.35;
+    this.sensitivityThreshold = 0.42;
     this.warmingUp = false;
     this.currentAbort = null;
     this.onTranscriptUpdate = null;
   }
 
   setSensitivity(v) {
-    // Lower bar than before: real-world 2s clips score lower than 5s training
-    // clips, and non-alert room noise maps to non-alert classes anyway, so a
-    // lower threshold catches real sounds without spamming false alerts.
-    // v=7 (default) → ~15%, v=10 → ~8%, v=5 → ~22%
-    this.sensitivityThreshold = Math.max(0.08, 0.40 - (v / 10) * 0.36);
+    // v=1 (conservative) → 66%, v=5 → 50%, v=7 (default) → 42%, v=10 (aggressive) → 30%
+    this.sensitivityThreshold = Math.max(0.30, 0.70 - (v / 10) * 0.40);
     if (this.yamnet) this.yamnet.setSensitivity(v);
   }
 
@@ -1901,7 +1898,7 @@ const HearoApp = () => {
                 <span>Aggressive</span>
               </div>
               <p className="text-xs text-white/50 mt-1">
-                YAMNet confidence threshold: {Math.round(Math.max(0.12, 0.55 - (sensitivity / 10) * 0.43) * 100)}%
+                YAMNet confidence threshold: {Math.round(Math.max(0.30, 0.70 - (sensitivity / 10) * 0.40) * 100)}%
               </p>
             </div>
             <div>
