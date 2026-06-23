@@ -275,16 +275,29 @@ class YamNetClassifier {
         const probsData  = await meanProbs.data();
         const processingTime = `${((performance.now() - startTime) / 1000).toFixed(2)}s`;
 
-        const predictions = Array.from(probsData)
+        let predictions = Array.from(probsData)
           .map((score, i) => {
             const label = this.customLabels[i] || `class_${i}`;
             return { className: label, confidence: score, category: this.customMapping[label] || null };
-          })
-          .sort((a, b) => b.confidence - a.confidence)
-          .slice(0, 15);
+          });
 
         logits.dispose();
         meanProbs.dispose();
+
+        // Safety net: ESC-50 has no fire/smoke-alarm class, but YAMNet's 521
+        // scores were computed in the SAME execute() call above. Read the
+        // strongest fire-alarm score from those scores (free — no extra pass)
+        // and merge it so the most safety-critical sound is never missed.
+        // Wrapped so a failure here can never take down the primary result.
+        try {
+          const fire = await this._yamnetFireAlarmPrediction(arr, embeddings);
+          if (fire) predictions.push(fire);
+        } catch (_) { /* fire-alarm safety net is best-effort */ }
+
+        predictions = predictions
+          .sort((a, b) => b.confidence - a.confidence)
+          .slice(0, 15);
+
         return { predictions, processingTime };
       }
 
