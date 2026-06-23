@@ -29,6 +29,7 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 public class HearoAlertPlugin extends Plugin {
 
     private static final String CHANNEL_ID = "hearo_critical";
+    private static final String CHANNEL_ALERTS = "hearo_alerts";
     private static final int NOTIF_ID = 7001;
     private static final String ACTION_DISMISS = "ai.hearo.app.DISMISS_ALERT";
 
@@ -46,7 +47,42 @@ public class HearoAlertPlugin extends Plugin {
             ch.enableVibration(true);
             ch.setVibrationPattern(new long[]{0, 600, 300, 600});
             nm.createNotificationChannel(ch);
+
+            NotificationChannel alerts = new NotificationChannel(
+                    CHANNEL_ALERTS, "Sound Alerts", NotificationManager.IMPORTANCE_HIGH);
+            alerts.setDescription("Detected sounds (non-critical)");
+            alerts.enableVibration(true);
+            alerts.setVibrationPattern(new long[]{0, 300, 150, 300});
+            nm.createNotificationChannel(alerts);
         }
+    }
+
+    // Regular heads-up notification for non-critical sounds (buzzes the phone
+    // and mirrors to the watch with a single alert).
+    @PluginMethod
+    public void showAlert(PluginCall call) {
+        String title = call.getString("title", "Hearo Alert");
+        String body = call.getString("body", "");
+        Context ctx = getContext();
+
+        Intent open = new Intent(ctx, MainActivity.class);
+        open.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        PendingIntent openPending = PendingIntent.getActivity(ctx, 2, open,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+
+        NotificationCompat.Builder b = new NotificationCompat.Builder(ctx, CHANNEL_ALERTS)
+                .setSmallIcon(android.R.drawable.ic_dialog_alert)
+                .setContentTitle(title)
+                .setContentText(body)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+                .setAutoCancel(true)
+                .setDefaults(NotificationCompat.DEFAULT_VIBRATE)
+                .setContentIntent(openPending);
+
+        NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+        nm.notify((int) (System.currentTimeMillis() % 100000), b.build());
+        call.resolve();
     }
 
     @PluginMethod

@@ -1047,16 +1047,18 @@ class AlertProcessor {
     setTimeout(() => { document.body.style.backgroundColor = ''; }, 300);
     this.playTone(alert.severity);
 
-    // Native APK + critical → true call-style ring (rings phone AND watch
-    // continuously until dismissed). Skips the web loop entirely.
-    if (IS_NATIVE && alert.severity === 'critical') {
+    // Native APK → route ALL alerts through native notifications (the web
+    // service-worker notification path doesn't work inside the WebView).
+    //   critical → call-style ring (phone + watch, continuous until dismissed)
+    //   else     → regular heads-up notification (buzzes phone + watch once)
+    if (IS_NATIVE) {
       try {
-        HearoAlert.ring({
-          title: `Hearo: ${alert.soundType.replace(/_/g, ' ')}`,
-          body: `${alert.location} — ${alert.confidence}% confidence`,
-        });
-        return;
-      } catch (_) { /* fall through to web behavior */ }
+        const title = `Hearo: ${alert.soundType.replace(/_/g, ' ')}`;
+        const body = `${alert.location} — ${alert.confidence}% confidence`;
+        if (alert.severity === 'critical') HearoAlert.ring({ title, body });
+        else HearoAlert.showAlert({ title, body });
+      } catch (_) { /* best-effort */ }
+      return;
     }
 
     // Phone haptic pattern (the watch ignores the pattern, see below)
