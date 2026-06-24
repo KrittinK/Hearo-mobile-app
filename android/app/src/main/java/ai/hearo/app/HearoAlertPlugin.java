@@ -105,8 +105,14 @@ public class HearoAlertPlugin extends Plugin {
     public void ring(PluginCall call) {
         final String title = call.getString("title", "Hearo Alert");
         final String body = call.getString("body", "Critical sound detected");
-        final String soundType = call.getString("soundType", "");
         final Context ctx = getContext();
+
+        // soundType is passed by newer JS builds. If missing, extract from title:
+        // title format is always "Hearo: glass break" → "glass_break"
+        String soundType = call.getString("soundType", "");
+        if (soundType.isEmpty() && title.startsWith("Hearo: ")) {
+            soundType = title.substring("Hearo: ".length()).trim().replace(" ", "_");
+        }
 
         registerDismiss();
 
