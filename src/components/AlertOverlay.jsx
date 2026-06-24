@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { TIERS } from '../alerts/severity';
+import { startStrobe, stopStrobe } from '../alerts/strobe';
 
 // Tier identity is conveyed by icon + WORD + color (never color alone — WCAG 1.4.1).
 const TIER_META = {
@@ -39,6 +40,13 @@ export default function AlertOverlay({ alert, tier, onDismiss }) {
       try { if (wakeRef.current) wakeRef.current.release(); } catch (_) {}
       wakeRef.current = null;
     };
+  }, [isCritical]);
+
+  // On-screen strobe for CRITICAL (2.5Hz — hard WCAG 2.3.1 ≤3Hz cap). Web only.
+  useEffect(() => {
+    if (!isCritical) return undefined;
+    startStrobe();
+    return () => stopStrobe();
   }, [isCritical]);
 
   // IMPORTANT auto-dismisses (still logged in Recent Alerts); CRITICAL stays.

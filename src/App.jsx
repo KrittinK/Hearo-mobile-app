@@ -5,8 +5,10 @@ import { Capacitor, registerPlugin } from '@capacitor/core';
 import hearoLogo from './images/Hearo.png';
 import { getSeverity, TIERS } from './alerts/severity';
 import * as haptics from './alerts/haptics';
+import { triggerEscalation } from './alerts/escalation';
 import AlertOverlay from './components/AlertOverlay';
 import AmbientBanner from './components/AmbientBanner';
+import { DEMO_MODE } from './config/flags';
 
 // Native call-style alert plugin (only real on the Android APK build).
 // On the web this proxy exists but isNativePlatform() is false, so we
@@ -1238,6 +1240,9 @@ const HearoApp = () => {
   const [modelMode, setModelMode] = useState(
     () => localStorage.getItem('hearo_model_mode') || 'custom'
   );
+  const [demoModeEnabled, setDemoModeEnabled] = useState(
+    () => localStorage.getItem('hearo_demo_mode') === 'true' || DEMO_MODE
+  );
 
   const yamnetRef      = useRef(new YamNetClassifier());
   const svcRef         = useRef(new ServiceManager());
@@ -1351,7 +1356,10 @@ const HearoApp = () => {
           const tier = getSeverity(alertData.soundType);
           haptics.start(tier);
           if (tier === TIERS.AMBIENT) setAmbientAlert(alertData);
-          else setActiveAlert({ alert: alertData, tier });
+          else {
+            setActiveAlert({ alert: alertData, tier });
+            if (tier === TIERS.CRITICAL) triggerEscalation(alertData); // stub — no-op until Phase 3
+          }
         }
       }
       dbg.fires = firedCountRef.current;
@@ -1585,13 +1593,15 @@ const HearoApp = () => {
             </button>
           </div>
 
-          <div className="border-t pt-4">
-            <button onClick={simulateCriticalScenario} disabled={!!emergencyScenario}
-              className="w-full px-4 py-3 bg-[#FFE600] hover:bg-[#E6CF00] disabled:bg-white/20 disabled:text-white/40 text-[#1E3FB8] rounded-lg font-bold transition-all">
-              🚨 Demo: Kitchen Fire Emergency
-            </button>
-            <p className="text-xs text-white/60 mt-2 text-center">Simulate how Hearo saves lives in critical situations</p>
-          </div>
+          {demoModeEnabled && (
+            <div className="border-t pt-4">
+              <button onClick={simulateCriticalScenario} disabled={!!emergencyScenario}
+                className="w-full px-4 py-3 bg-[#FFE600] hover:bg-[#E6CF00] disabled:bg-white/20 disabled:text-white/40 text-[#1E3FB8] rounded-lg font-bold transition-all">
+                🚨 Demo: Kitchen Fire Emergency
+              </button>
+              <p className="text-xs text-white/60 mt-2 text-center">Simulate how Hearo saves lives in critical situations</p>
+            </div>
+          )}
 
           {/* Recent Alerts — below Start/Demo */}
           {recentAlerts.length > 0 && (
@@ -2184,6 +2194,26 @@ const HearoApp = () => {
             className="w-full mt-3 p-3 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl text-white/60 hover:text-white/80 text-sm font-medium transition-all">
             ✕ Cancel Vibration
           </button>
+        </div>
+
+        {/* Developer Options */}
+        <div className="bg-[#1E3FB8]/30 rounded-2xl p-6 border border-white/10">
+          <h3 className="text-lg font-semibold text-white mb-1 flex items-center gap-2">
+            <span>🛠</span>Developer Options
+          </h3>
+          <p className="text-xs text-white/50 mb-4">For testing and demonstrations only</p>
+          <label className="flex items-center justify-between p-4 bg-white/5 rounded-lg cursor-pointer">
+            <div>
+              <span className="font-medium">Demo Mode</span>
+              <p className="text-xs text-white/60 mt-0.5">Show "Kitchen Fire Emergency" demo button on Home</p>
+            </div>
+            <input type="checkbox" checked={demoModeEnabled}
+              onChange={e => {
+                setDemoModeEnabled(e.target.checked);
+                localStorage.setItem('hearo_demo_mode', String(e.target.checked));
+              }}
+              className="w-5 h-5 text-[#00A8E1] rounded" />
+          </label>
         </div>
 
         {/* Performance */}
