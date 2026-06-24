@@ -74,6 +74,7 @@ public class CriticalListenerService extends WearableListenerService {
             soundType = parts[0];
             body = parts.length > 1 ? parts[1] : "";
         }
+        Log.d("HearoWear", "showFullScreenAlert: payload='" + payload + "' → soundType='" + soundType + "' body='" + body + "'");
 
         String emoji = emojiFor(soundType);
         String label = labelFor(soundType);

@@ -11,6 +11,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
+import android.util.Log;
 import android.view.WindowManager;
 import android.widget.TextView;
 
@@ -51,6 +52,7 @@ public class AlertActivity extends Activity {
         String emoji = getIntent().getStringExtra("emoji");
         String label = getIntent().getStringExtra("label");
         String body  = getIntent().getStringExtra("body");
+        Log.d("HearoWear", "AlertActivity onCreate: emoji='" + emoji + "' label='" + label + "' body='" + body + "'");
 
         TextView titleTv = findViewById(R.id.alert_title);
         if (titleTv != null) {

@@ -112,7 +112,9 @@ public class HearoAlertPlugin extends Plugin {
 
         // Push the critical alert to the watch (strong vibration runs there) and
         // listen for the watch's Dismiss so we can stop the phone alert too.
-        sendToWatch(PATH_CRITICAL, soundType + "|" + body);
+        String watchPayload = soundType + "|" + body;
+        Log.d("HearoAlert", "ring: soundType='" + soundType + "' watchPayload='" + watchPayload + "'");
+        sendToWatch(PATH_CRITICAL, watchPayload);
         registerWearStopListener();
 
         // Continuous phone vibration until dismissed (repeat from index 0 = forever)
