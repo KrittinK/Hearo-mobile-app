@@ -2266,7 +2266,7 @@ const HearoApp = () => {
             <button
               key={t}
               disabled={!tel}
-              onClick={() => tel && (window.location.href = 'tel:' + tel)}
+              onClick={() => tel && window.open('tel:' + tel, '_system')}
               className={`${bg} text-white p-8 rounded-2xl text-center border border-white/10 transition-all disabled:opacity-50`}>
               <Icon className="w-12 h-12 mx-auto mb-3" />
               <span className="text-xl font-bold">{t}</span>
