@@ -13,7 +13,6 @@ import androidx.core.app.NotificationCompat;
 import com.google.android.gms.wearable.MessageEvent;
 import com.google.android.gms.wearable.WearableListenerService;
 
-import org.json.JSONObject;
 
 /**
  * Runs on the WATCH. Receives critical-alert messages pushed from the phone
@@ -66,15 +65,15 @@ public class CriticalListenerService extends WearableListenerService {
     }
 
     private void showFullScreenAlert(String payload) {
-        // Payload is JSON: {"soundType":"fire_alarm","body":"Kitchen — 97%"}
-        // Fall back gracefully if it's a plain string (old format).
+        // Payload format: "soundType|body text"  e.g. "fire_alarm|Kitchen — 97%"
+        // If no pipe found, treat the whole string as body with unknown soundType.
         String soundType = "";
-        String body = payload;
-        try {
-            JSONObject json = new JSONObject(payload);
-            soundType = json.optString("soundType", "");
-            body = json.optString("body", payload);
-        } catch (Exception ignored) {}
+        String body = payload == null ? "" : payload;
+        if (payload != null && payload.contains("|")) {
+            String[] parts = payload.split("\\|", 2);
+            soundType = parts[0];
+            body = parts.length > 1 ? parts[1] : "";
+        }
 
         String emoji = emojiFor(soundType);
         String label = labelFor(soundType);
