@@ -2217,12 +2217,18 @@ const HearoApp = () => {
       <div className="p-6 space-y-6 -mt-1 pb-24">
         <div className="grid gap-4 relative z-10">
           {[
-            { bg: 'bg-red-600 hover:bg-red-700',         Icon: AlertTriangle, t: 'Emergency 191',    s: 'Thai Emergency Services' },
-            { bg: 'bg-red-800 hover:bg-red-900',         Icon: Shield,        t: 'Fire Department',  s: 'Call 199 • Auto-detection enabled' },
-            { bg: 'bg-[#00A8E1] hover:bg-[#0090C4]',    Icon: Phone,         t: 'Medical Emergency', s: 'Call 1669 • Health monitoring' },
-            { bg: 'bg-[#1E3FB8] hover:bg-[#1835A0]',    Icon: Users,         t: 'Family Network',   s: '3 contacts • GPS location sharing' },
-          ].map(({ bg, Icon, t, s }) => (
-            <button key={t} className={`${bg} text-white p-8 rounded-2xl text-center border border-white/10 transition-all`}>
+            { bg: 'bg-red-600 hover:bg-red-700 active:scale-95',      Icon: AlertTriangle, t: 'Emergency 191',    s: 'Thai Emergency Services',          tel: '191'  },
+            { bg: 'bg-red-800 hover:bg-red-900 active:scale-95',      Icon: Shield,        t: 'Fire Department',  s: 'Call 199 • Auto-detection enabled', tel: '199'  },
+            { bg: 'bg-[#00A8E1] hover:bg-[#0090C4] active:scale-95', Icon: Phone,         t: 'Medical Emergency', s: 'Call 1669 • Health monitoring',    tel: '1669' },
+            { bg: 'bg-[#1E3FB8] hover:bg-[#1835A0]',                  Icon: Users,         t: 'Family Network',   s: '3 contacts • GPS location sharing', tel: null   },
+          ].map(({ bg, Icon, t, s, tel }) => (
+            <button key={t}
+              disabled={!tel}
+              onClick={() => tel && (IS_NATIVE
+                ? HearoAlert.dialNumber({ number: tel }).catch(() => {})
+                : (window.location.href = 'tel:' + tel))
+              }
+              className={`${bg} text-white p-8 rounded-2xl text-center border border-white/10 transition-all w-full disabled:opacity-60`}>
               <Icon className="w-12 h-12 mx-auto mb-3" />
               <span className="text-xl font-bold">{t}</span>
               <p className="text-sm mt-2 opacity-90">{s}</p>
