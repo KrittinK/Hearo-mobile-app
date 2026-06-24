@@ -174,6 +174,23 @@ public class HearoAlertPlugin extends Plugin {
         call.resolve();
     }
 
+    // Opens the system phone dialer with the number pre-filled.
+    // ACTION_DIAL requires no permission — the user still has to tap Call.
+    @PluginMethod
+    public void dialNumber(PluginCall call) {
+        String number = call.getString("number", "");
+        if (number.isEmpty()) { call.reject("number required"); return; }
+        try {
+            Intent intent = new Intent(Intent.ACTION_DIAL,
+                    android.net.Uri.parse("tel:" + number));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(intent);
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("Could not open dialer: " + e.getMessage());
+        }
+    }
+
     private void registerDismiss() {
         if (dismissReceiver != null) return;
         dismissReceiver = new BroadcastReceiver() {
