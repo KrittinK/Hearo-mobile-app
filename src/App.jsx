@@ -2263,12 +2263,16 @@ const HearoApp = () => {
             { bg: 'bg-[#00A8E1] hover:bg-[#0090C4] active:scale-95', Icon: Phone,         t: 'Medical Emergency', s: 'Call 1669 · Health monitoring',    tel: '1669' },
             { bg: 'bg-[#1E3FB8]/50 opacity-50 cursor-not-allowed',    Icon: Users,         t: 'Family Network',   s: 'Coming soon · Phase 3',            tel: null   },
           ].map(({ bg, Icon, t, s, tel }) => tel ? (
-            <a key={t} href={`tel:${tel}`}
-              className={`${bg} text-white p-8 rounded-2xl text-center border border-white/10 transition-all block no-underline`}>
+            <button key={t}
+              onClick={() => IS_NATIVE
+                ? HearoAlert.dialNumber({ number: tel }).catch(() => {})
+                : (window.location.href = 'tel:' + tel)
+              }
+              className={`${bg} text-white p-8 rounded-2xl text-center border border-white/10 transition-all w-full`}>
               <Icon className="w-12 h-12 mx-auto mb-3" />
               <span className="text-xl font-bold">{t}</span>
               <p className="text-sm mt-2 opacity-90">{s}</p>
-            </a>
+            </button>
           ) : (
             <div key={t}
               className={`${bg} text-white p-8 rounded-2xl text-center border border-white/10`}>
