@@ -3,6 +3,10 @@ import { Bell, Home, Settings, Shield, Phone, Baby, Car, AlertTriangle, Volume2,
 import * as tf from '@tensorflow/tfjs';
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import hearoLogo from './images/Hearo.png';
+import { getSeverity, TIERS } from './alerts/severity';
+import * as haptics from './alerts/haptics';
+import AlertOverlay from './components/AlertOverlay';
+import AmbientBanner from './components/AmbientBanner';
 
 // Native call-style alert plugin (only real on the Android APK build).
 // On the web this proxy exists but isNativePlatform() is false, so we
@@ -39,7 +43,7 @@ const SoundCategories = {
   scream:        { type: 'emergency', severity: 'critical', location: 'Unknown'     },
   dog_bark:      { type: 'dog',       severity: 'low',      location: 'Outside'     },
   knock:         { type: 'knock',     severity: 'medium',   location: 'Front Door'  },
-  siren:         { type: 'emergency', severity: 'high',     location: 'Outside'     },
+  siren:         { type: 'emergency', severity: 'critical', location: 'Outside'     },
   alarm:         { type: 'emergency', severity: 'high',     location: 'Unknown'     },
 };
 
@@ -1061,9 +1065,9 @@ class AlertProcessor {
       return;
     }
 
-    // Phone haptic pattern (the watch ignores the pattern, see below)
+    // Phone vibration is owned by the tier-based haptics module (alerts/haptics);
+    // here `p` only drives the watch re-buzz cadence + notification timing.
     const p = this.vibrationPattern(alert.severity);
-    if ('vibrate' in navigator) navigator.vibrate(p);
 
     const notify = (n) => {
       if (!('Notification' in window) || Notification.permission !== 'granted') return;
@@ -1085,12 +1089,8 @@ class AlertProcessor {
     notify();
     const patMs = p.reduce((a, b) => a + b, 0);
     if (alert.severity === 'critical') {
-      // Near-continuous: re-fire with only a tiny gap so the phone feels like
-      // a non-stop ring, and the watch re-buzzes as often as it'll allow.
-      this._alertInterval = setInterval(() => {
-        if ('vibrate' in navigator) navigator.vibrate(p);
-        notify();
-      }, patMs + 150);
+      // Near-continuous: re-fire so the watch re-buzzes as often as it'll allow.
+      this._alertInterval = setInterval(() => { notify(); }, patMs + 150);
     } else {
       const buzzes = { high: 3, medium: 2, low: 1 }[alert.severity] || 1;
       let count = 1;
@@ -1098,7 +1098,6 @@ class AlertProcessor {
         this._alertInterval = setInterval(() => {
           if (count >= buzzes) { this.stopAlertHaptics(); return; }
           count++;
-          if ('vibrate' in navigator) navigator.vibrate(p);
           notify();
         }, patMs + 400); // distinct, countable buzzes
       }
@@ -1204,6 +1203,8 @@ const HearoApp = () => {
   const [geminiKeySaved, setGeminiKeySaved] = useState(false);
   const [liveTopPredictions, setLivePreds]  = useState([]);
   const [sensitivity, setSensitivity]       = useState(DetectionConfig.defaultSensitivity);
+  const [activeAlert, setActiveAlert]       = useState(null); // {alert, tier} → AlertOverlay
+  const [ambientAlert, setAmbientAlert]     = useState(null); // → AmbientBanner
   const [recentAlerts, setRecentAlerts]     = useState(() => {
     try { return JSON.parse(localStorage.getItem('hearo_alerts') || '[]').slice(0, 5); } catch (_) { return []; }
   });
@@ -1344,7 +1345,14 @@ const HearoApp = () => {
         console.log(`✅ ALERT → ${best.className} ${Math.round(best.confidence * 100)}% → ${best.category}`);
         firedCountRef.current++;
         const alertData = await alertRef.current.processAlert(alertResult);
-        if (alertData) setRecentAlerts(prev => [alertData, ...prev.slice(0, 9)]);
+        if (alertData) {
+          setRecentAlerts(prev => [alertData, ...prev.slice(0, 9)]);
+          // Tiered experience: AMBIENT → banner, IMPORTANT/CRITICAL → full-screen
+          const tier = getSeverity(alertData.soundType);
+          haptics.start(tier);
+          if (tier === TIERS.AMBIENT) setAmbientAlert(alertData);
+          else setActiveAlert({ alert: alertData, tier });
+        }
       }
       dbg.fires = firedCountRef.current;
     } else {
@@ -1435,6 +1443,9 @@ const HearoApp = () => {
     try { transcriberRef.current.clearTranscript(); } catch (_) {}  // clean slate on stop
     if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
     try { alertRef.current.stopAlertHaptics(); } catch (_) {}
+    try { haptics.stop(); } catch (_) {}
+    setActiveAlert(null);
+    setAmbientAlert(null);
     setLivePreds([]);
     setTranscriptLines([]);
     setInterimText('');
@@ -2292,6 +2303,22 @@ const HearoApp = () => {
         {isListening && recentAlerts.length > 0 &&
           `Hearo detected ${recentAlerts[0].rawLabel || UIUtils.getAlertText(recentAlerts[0].soundType) || UIUtils.getAlertText(recentAlerts[0].type) || 'a sound'} at ${recentAlerts[0].location} with ${recentAlerts[0].confidence}% confidence`}
       </div>
+
+      {/* Tiered alert surfaces — overlay (critical/important) + ambient banner */}
+      {activeAlert && (
+        <AlertOverlay
+          alert={activeAlert.alert}
+          tier={activeAlert.tier}
+          onDismiss={() => {
+            setActiveAlert(null);
+            haptics.stop();
+            try { alertRef.current.stopAlertHaptics(); } catch (_) {}
+          }}
+        />
+      )}
+      {ambientAlert && (
+        <AmbientBanner alert={ambientAlert} onDismiss={() => setAmbientAlert(null)} />
+      )}
     </div>
   );
 };
