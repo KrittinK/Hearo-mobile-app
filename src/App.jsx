@@ -1061,8 +1061,8 @@ class AlertProcessor {
       try {
         const title = `Hearo: ${alert.soundType.replace(/_/g, ' ')}`;
         const body = `${alert.location} — ${alert.confidence}% confidence`;
-        if (alert.severity === 'critical') HearoAlert.ring({ title, body });
-        else HearoAlert.showAlert({ title, body });
+        if (alert.severity === 'critical') HearoAlert.ring({ title, body, soundType: alert.soundType });
+        else HearoAlert.showAlert({ title, body, soundType: alert.soundType });
       } catch (_) { /* best-effort */ }
       return;
     }

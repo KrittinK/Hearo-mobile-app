@@ -48,11 +48,19 @@ public class AlertActivity extends Activity {
 
         setContentView(R.layout.activity_alert);
 
-        String body = getIntent().getStringExtra("body");
-        if (body != null && !body.isEmpty()) {
-            TextView tv = findViewById(R.id.alert_body);
-            if (tv != null) tv.setText(body);
+        String emoji = getIntent().getStringExtra("emoji");
+        String label = getIntent().getStringExtra("label");
+        String body  = getIntent().getStringExtra("body");
+
+        TextView titleTv = findViewById(R.id.alert_title);
+        if (titleTv != null) {
+            String e = (emoji != null && !emoji.isEmpty()) ? emoji : "🔔";
+            String l = (label != null && !label.isEmpty()) ? label : "ALERT";
+            titleTv.setText(e + " " + l);
         }
+
+        TextView bodyTv = findViewById(R.id.alert_body);
+        if (bodyTv != null && body != null && !body.isEmpty()) bodyTv.setText(body);
 
         findViewById(R.id.dismiss_btn).setOnClickListener(v -> {
             userDismissed = true;
