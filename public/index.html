@@ -40,6 +40,42 @@
   <body>
     <noscript>You need to enable JavaScript to run this app.</noscript>
     <div id="root"></div>
+
+    <!-- Landscape guard: phones can't be reliably orientation-locked in a
+         browser tab, so show a "rotate to portrait" overlay instead. Hidden
+         by default; only shown on touch devices held in landscape. -->
+    <style>
+      #rotate-guard { display: none; }
+      @media (orientation: landscape) and (max-width: 1024px) and (pointer: coarse) {
+        #rotate-guard {
+          display: flex;
+          position: fixed;
+          inset: 0;
+          z-index: 99999;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 18px;
+          padding: 24px;
+          text-align: center;
+          color: #ffffff;
+          background-image: radial-gradient(125% 90% at 72% 26%, #2B52CC 0%, #19357F 48%, #0C1A4E 100%);
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+        #rotate-guard svg { width: 56px; height: 56px; animation: rg-rock 1.6s ease-in-out infinite; }
+        #rotate-guard h2 { margin: 0; font-size: 20px; font-weight: 700; }
+        #rotate-guard p { margin: 0; font-size: 14px; color: rgba(255,255,255,0.7); max-width: 320px; }
+      }
+      @keyframes rg-rock { 0%, 100% { transform: rotate(0deg); } 50% { transform: rotate(-90deg); } }
+    </style>
+    <div id="rotate-guard">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#B4ECFF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="7" y="2" width="10" height="20" rx="2"></rect>
+        <line x1="11" y1="18" x2="13" y2="18"></line>
+      </svg>
+      <h2>Please rotate to portrait</h2>
+      <p>Hearo works best upright — turn your device back to portrait mode.</p>
+    </div>
     <!--
       This HTML file is a template.
       If you open it directly in the browser, you will see an empty page.
