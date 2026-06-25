@@ -1192,7 +1192,7 @@ class UIUtils {
 // ==================== MAIN APP ====================
 const HearoApp = () => {
   const [currentScreen, setCurrentScreen]   = useState('home');
-  const [theme, setTheme]                   = useState(() => localStorage.getItem('hearo_theme') || 'light');
+  const [theme, setTheme]                   = useState(() => localStorage.getItem('hearo_theme') || 'dark');
   const [isListening, setIsListening]       = useState(false);
   const [isProcessing, setIsProcessing]     = useState(false);
   const [audioLevel, setAudioLevel]         = useState(0);

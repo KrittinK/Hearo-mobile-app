@@ -25,6 +25,17 @@
       Learn how to configure a non-root public URL by running `npm run build`.
     -->
     <title>Hearo</title>
+    <script>
+      // Apply theme before paint (default: dark) to avoid a light flash
+      (function () {
+        try {
+          var t = localStorage.getItem('hearo_theme') || 'dark';
+          document.documentElement.setAttribute('data-theme', t);
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      })();
+    </script>
   </head>
   <body>
     <noscript>You need to enable JavaScript to run this app.</noscript>
