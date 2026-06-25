@@ -8,7 +8,6 @@ import * as haptics from './alerts/haptics';
 import { triggerEscalation } from './alerts/escalation';
 import AlertOverlay from './components/AlertOverlay';
 import AmbientBanner from './components/AmbientBanner';
-import { DEMO_MODE } from './config/flags';
 
 // Native call-style alert plugin (only real on the Android APK build).
 // On the web this proxy exists but isNativePlatform() is false, so we
@@ -1223,7 +1222,7 @@ const HearoApp = () => {
   const [transcriptLines, setTranscriptLines]   = useState([]);
   const [interimText, setInterimText]           = useState('');
   const [transcriptLang, setTranscriptLang]     = useState('th-TH');
-  const [transcriptEnabled, setTranscriptEnabled] = useState(true);
+  const [transcriptEnabled, setTranscriptEnabled] = useState(false);
   const [showTranscript, setShowTranscript]     = useState(true);
 
   // Detection speed — YAMNet is on-device so 2s is default (no rate limit)
@@ -1242,10 +1241,10 @@ const HearoApp = () => {
     () => localStorage.getItem('hearo_model_mode') || 'custom'
   );
   const [demoModeEnabled, setDemoModeEnabled] = useState(
-    () => localStorage.getItem('hearo_demo_mode') === 'true' || DEMO_MODE
+    () => localStorage.getItem('hearo_demo_mode') === 'true'
   );
   const [impactStoryEnabled, setImpactStoryEnabled] = useState(
-    () => localStorage.getItem('hearo_impact_story') !== 'false'
+    () => localStorage.getItem('hearo_impact_story') === 'true'
   );
   const [debugEnabled, setDebugEnabled] = useState(
     () => localStorage.getItem('hearo_debug') === 'true'
