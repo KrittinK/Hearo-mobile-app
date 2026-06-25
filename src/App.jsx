@@ -2232,10 +2232,10 @@ const HearoApp = () => {
           <p className="text-xs text-[var(--text-4)] mb-4">Tap a button to feel each pattern on your device</p>
           <div className="grid grid-cols-2 gap-3">
             {[
-              { label: 'Gentle',    emoji: '〰️', pattern: [0, 300],                                 bg: 'bg-green-500/10 hover:bg-green-500/20 border-green-500/30',   text: 'text-green-400',  sub: 'text-green-400/70',  desc: '1 pulse'      },
-              { label: 'Medium',    emoji: '〰️〰️', pattern: [0, 300, 250, 300],                       bg: 'bg-[#00A8E1]/10 hover:bg-[#00A8E1]/20 border-[#00A8E1]/30', text: 'text-[var(--accent-cyan)]',  sub: 'text-[var(--accent-cyan)]/70', desc: '2 pulses'    },
-              { label: 'Strong',    emoji: '⚡', pattern: [0, 400, 250, 400, 250, 400],               bg: 'bg-[#FFE600]/10 hover:bg-[#FFE600]/20 border-[#FFE600]/30', text: 'text-[var(--accent-gold)]',  sub: 'text-[var(--accent-gold)]/70', desc: '3 pulses'     },
-              { label: 'Emergency', emoji: '🚨', pattern: [0, 500, 250, 500, 250, 500, 250, 500],     bg: 'bg-red-500/10   hover:bg-red-500/20   border-red-500/30',    text: 'text-red-400',    sub: 'text-red-400/70',   desc: '4 strong bursts'},
+              { label: 'Gentle',    emoji: '〰️', pattern: [0, 300, 250, 300],                                   bg: 'bg-green-500/10 hover:bg-green-500/20 border-green-500/30',   text: 'text-green-400',  sub: 'text-green-400/70',  desc: '1 pulse'      },
+              { label: 'Medium',    emoji: '〰️〰️', pattern: [0, 300, 250, 300, 250, 300],                         bg: 'bg-[#00A8E1]/10 hover:bg-[#00A8E1]/20 border-[#00A8E1]/30', text: 'text-[var(--accent-cyan)]',  sub: 'text-[var(--accent-cyan)]/70', desc: '2 pulses'    },
+              { label: 'Strong',    emoji: '⚡', pattern: [0, 400, 250, 400, 250, 400, 250, 400],                 bg: 'bg-[#FFE600]/10 hover:bg-[#FFE600]/20 border-[#FFE600]/30', text: 'text-[var(--accent-gold)]',  sub: 'text-[var(--accent-gold)]/70', desc: '3 pulses'     },
+              { label: 'Emergency', emoji: '🚨', pattern: [0, 500, 250, 500, 250, 500, 250, 500, 250, 500],       bg: 'bg-red-500/10   hover:bg-red-500/20   border-red-500/30',    text: 'text-red-400',    sub: 'text-red-400/70',   desc: '4 strong bursts'},
             ].map(({ label, emoji, pattern, bg, text, sub, desc }) => (
               <button key={label} onClick={() => navigator.vibrate && navigator.vibrate(pattern)}
                 className={`p-4 rounded-xl border text-center transition-all active:scale-95 ${bg}`}>
