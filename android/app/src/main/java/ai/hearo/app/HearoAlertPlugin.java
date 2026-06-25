@@ -107,11 +107,20 @@ public class HearoAlertPlugin extends Plugin {
         final String body = call.getString("body", "Critical sound detected");
         final Context ctx = getContext();
 
+        // soundType is passed by newer JS builds. If missing, extract from title:
+        // title format is always "Hearo: glass break" → "glass_break"
+        String soundType = call.getString("soundType", "");
+        if (soundType.isEmpty() && title.startsWith("Hearo: ")) {
+            soundType = title.substring("Hearo: ".length()).trim().replace(" ", "_");
+        }
+
         registerDismiss();
 
         // Push the critical alert to the watch (strong vibration runs there) and
         // listen for the watch's Dismiss so we can stop the phone alert too.
-        sendToWatch(PATH_CRITICAL, body);
+        String watchPayload = soundType + "|" + body;
+        Log.d("HearoAlert", "ring: soundType='" + soundType + "' watchPayload='" + watchPayload + "'");
+        sendToWatch(PATH_CRITICAL, watchPayload);
         registerWearStopListener();
 
         // Continuous phone vibration until dismissed (repeat from index 0 = forever)

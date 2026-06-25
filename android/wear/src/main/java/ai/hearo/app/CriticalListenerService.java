@@ -13,6 +13,7 @@ import androidx.core.app.NotificationCompat;
 import com.google.android.gms.wearable.MessageEvent;
 import com.google.android.gms.wearable.WearableListenerService;
 
+
 /**
  * Runs on the WATCH. Receives critical-alert messages pushed from the phone
  * over the Wear Data Layer and launches a full-screen alarm (AlertActivity)
@@ -24,6 +25,30 @@ public class CriticalListenerService extends WearableListenerService {
     private static final String CHANNEL = "hearo_watch_critical";
     static final String PATH_CRITICAL = "/hearo/critical";
     static final String PATH_STOP = "/hearo/stop";
+
+    static String emojiFor(String soundType) {
+        if (soundType == null) return "🔔";
+        switch (soundType) {
+            case "fire_alarm":     return "🔥";
+            case "smoke_detector": return "🔥";
+            case "siren":          return "🚨";
+            case "scream":         return "😱";
+            case "glass_break":    return "💥";
+            case "doorbell":       return "🔔";
+            case "knock":          return "👊";
+            case "baby_cry":       return "👶";
+            case "phone_ring":     return "📞";
+            case "alarm":          return "⏰";
+            case "dog_bark":       return "🐕";
+            case "car_horn":       return "🚗";
+            default:               return "🔔";
+        }
+    }
+
+    static String labelFor(String soundType) {
+        if (soundType == null || soundType.isEmpty()) return "ALERT";
+        return soundType.replace("_", " ").toUpperCase();
+    }
 
     @Override
     public void onMessageReceived(MessageEvent event) {
@@ -39,7 +64,22 @@ public class CriticalListenerService extends WearableListenerService {
         }
     }
 
-    private void showFullScreenAlert(String body) {
+    private void showFullScreenAlert(String payload) {
+        // Payload format: "soundType|body text"  e.g. "fire_alarm|Kitchen — 97%"
+        // If no pipe found, treat the whole string as body with unknown soundType.
+        String soundType = "";
+        String body = payload == null ? "" : payload;
+        if (payload != null && payload.contains("|")) {
+            String[] parts = payload.split("\\|", 2);
+            soundType = parts[0];
+            body = parts.length > 1 ? parts[1] : "";
+        }
+        Log.d("HearoWear", "showFullScreenAlert: payload='" + payload + "' → soundType='" + soundType + "' body='" + body + "'");
+
+        String emoji = emojiFor(soundType);
+        String label = labelFor(soundType);
+        String notifTitle = emoji + " " + label;
+
         Context ctx = this;
         NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
 
@@ -55,6 +95,9 @@ public class CriticalListenerService extends WearableListenerService {
 
         Intent full = new Intent(ctx, AlertActivity.class);
         full.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+        full.putExtra("soundType", soundType);
+        full.putExtra("label", label);
+        full.putExtra("emoji", emoji);
         full.putExtra("body", body);
 
         // Launch the strong-vibration activity directly. When the screen is ON,
@@ -73,7 +116,7 @@ public class CriticalListenerService extends WearableListenerService {
 
         NotificationCompat.Builder b = new NotificationCompat.Builder(ctx, CHANNEL)
                 .setSmallIcon(android.R.drawable.ic_dialog_alert)
-                .setContentTitle("🔥 FIRE ALARM")
+                .setContentTitle(notifTitle)
                 .setContentText(body == null || body.isEmpty() ? "Critical sound detected" : body)
                 .setPriority(NotificationCompat.PRIORITY_MAX)
                 .setCategory(NotificationCompat.CATEGORY_ALARM)

@@ -1,8 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Bell, Home, Settings, Shield, Phone, Baby, Car, AlertTriangle, Volume2, VolumeX, Smartphone, Watch, Lightbulb, Vibrate, Users, Wifi, Cpu, BarChart2, Activity, Key } from 'lucide-react';
+import { Bell, Home, Settings, Shield, Phone, Baby, Car, AlertTriangle, Volume2, VolumeX, Smartphone, Watch, Lightbulb, Vibrate, Users, Wifi, Cpu, BarChart2, Activity, Key, Sun, Moon } from 'lucide-react';
 import * as tf from '@tensorflow/tfjs';
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import hearoLogo from './images/Hearo.png';
+import { getSeverity, TIERS } from './alerts/severity';
+import * as haptics from './alerts/haptics';
+import { triggerEscalation } from './alerts/escalation';
+import AlertOverlay from './components/AlertOverlay';
+import AmbientBanner from './components/AmbientBanner';
+import { DEMO_MODE } from './config/flags';
 
 // Native call-style alert plugin (only real on the Android APK build).
 // On the web this proxy exists but isNativePlatform() is false, so we
@@ -39,7 +45,7 @@ const SoundCategories = {
   scream:        { type: 'emergency', severity: 'critical', location: 'Unknown'     },
   dog_bark:      { type: 'dog',       severity: 'low',      location: 'Outside'     },
   knock:         { type: 'knock',     severity: 'medium',   location: 'Front Door'  },
-  siren:         { type: 'emergency', severity: 'high',     location: 'Outside'     },
+  siren:         { type: 'emergency', severity: 'critical', location: 'Outside'     },
   alarm:         { type: 'emergency', severity: 'high',     location: 'Unknown'     },
 };
 
@@ -1055,15 +1061,15 @@ class AlertProcessor {
       try {
         const title = `Hearo: ${alert.soundType.replace(/_/g, ' ')}`;
         const body = `${alert.location} — ${alert.confidence}% confidence`;
-        if (alert.severity === 'critical') HearoAlert.ring({ title, body });
-        else HearoAlert.showAlert({ title, body });
+        if (alert.severity === 'critical') HearoAlert.ring({ title, body, soundType: alert.soundType });
+        else HearoAlert.showAlert({ title, body, soundType: alert.soundType });
       } catch (_) { /* best-effort */ }
       return;
     }
 
-    // Phone haptic pattern (the watch ignores the pattern, see below)
+    // Phone vibration is owned by the tier-based haptics module (alerts/haptics);
+    // here `p` only drives the watch re-buzz cadence + notification timing.
     const p = this.vibrationPattern(alert.severity);
-    if ('vibrate' in navigator) navigator.vibrate(p);
 
     const notify = (n) => {
       if (!('Notification' in window) || Notification.permission !== 'granted') return;
@@ -1085,12 +1091,8 @@ class AlertProcessor {
     notify();
     const patMs = p.reduce((a, b) => a + b, 0);
     if (alert.severity === 'critical') {
-      // Near-continuous: re-fire with only a tiny gap so the phone feels like
-      // a non-stop ring, and the watch re-buzzes as often as it'll allow.
-      this._alertInterval = setInterval(() => {
-        if ('vibrate' in navigator) navigator.vibrate(p);
-        notify();
-      }, patMs + 150);
+      // Near-continuous: re-fire so the watch re-buzzes as often as it'll allow.
+      this._alertInterval = setInterval(() => { notify(); }, patMs + 150);
     } else {
       const buzzes = { high: 3, medium: 2, low: 1 }[alert.severity] || 1;
       let count = 1;
@@ -1098,7 +1100,6 @@ class AlertProcessor {
         this._alertInterval = setInterval(() => {
           if (count >= buzzes) { this.stopAlertHaptics(); return; }
           count++;
-          if ('vibrate' in navigator) navigator.vibrate(p);
           notify();
         }, patMs + 400); // distinct, countable buzzes
       }
@@ -1191,6 +1192,7 @@ class UIUtils {
 // ==================== MAIN APP ====================
 const HearoApp = () => {
   const [currentScreen, setCurrentScreen]   = useState('home');
+  const [theme, setTheme]                   = useState(() => localStorage.getItem('hearo_theme') || 'light');
   const [isListening, setIsListening]       = useState(false);
   const [isProcessing, setIsProcessing]     = useState(false);
   const [audioLevel, setAudioLevel]         = useState(0);
@@ -1204,6 +1206,8 @@ const HearoApp = () => {
   const [geminiKeySaved, setGeminiKeySaved] = useState(false);
   const [liveTopPredictions, setLivePreds]  = useState([]);
   const [sensitivity, setSensitivity]       = useState(DetectionConfig.defaultSensitivity);
+  const [activeAlert, setActiveAlert]       = useState(null); // {alert, tier} → AlertOverlay
+  const [ambientAlert, setAmbientAlert]     = useState(null); // → AmbientBanner
   const [recentAlerts, setRecentAlerts]     = useState(() => {
     try { return JSON.parse(localStorage.getItem('hearo_alerts') || '[]').slice(0, 5); } catch (_) { return []; }
   });
@@ -1237,6 +1241,15 @@ const HearoApp = () => {
   const [modelMode, setModelMode] = useState(
     () => localStorage.getItem('hearo_model_mode') || 'custom'
   );
+  const [demoModeEnabled, setDemoModeEnabled] = useState(
+    () => localStorage.getItem('hearo_demo_mode') === 'true' || DEMO_MODE
+  );
+  const [impactStoryEnabled, setImpactStoryEnabled] = useState(
+    () => localStorage.getItem('hearo_impact_story') !== 'false'
+  );
+  const [debugEnabled, setDebugEnabled] = useState(
+    () => localStorage.getItem('hearo_debug') === 'true'
+  );
 
   const yamnetRef      = useRef(new YamNetClassifier());
   const svcRef         = useRef(new ServiceManager());
@@ -1249,6 +1262,12 @@ const HearoApp = () => {
   const isStartingRef  = useRef(false);
   const cycleCountRef  = useRef(0); // detection cycles (debug)
   const firedCountRef  = useRef(0); // alerts fired (debug)
+
+  // Apply + persist the light/dark theme via a data-theme attribute (CSS vars)
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('hearo_theme', theme);
+  }, [theme]);
 
   useEffect(() => {
     init();
@@ -1344,7 +1363,17 @@ const HearoApp = () => {
         console.log(`✅ ALERT → ${best.className} ${Math.round(best.confidence * 100)}% → ${best.category}`);
         firedCountRef.current++;
         const alertData = await alertRef.current.processAlert(alertResult);
-        if (alertData) setRecentAlerts(prev => [alertData, ...prev.slice(0, 9)]);
+        if (alertData) {
+          setRecentAlerts(prev => [alertData, ...prev.slice(0, 9)]);
+          // Tiered experience: AMBIENT → banner, IMPORTANT/CRITICAL → full-screen
+          const tier = getSeverity(alertData.soundType);
+          haptics.start(tier);
+          if (tier === TIERS.AMBIENT) setAmbientAlert(alertData);
+          else {
+            setActiveAlert({ alert: alertData, tier });
+            if (tier === TIERS.CRITICAL) triggerEscalation(alertData); // stub — no-op until Phase 3
+          }
+        }
       }
       dbg.fires = firedCountRef.current;
     } else {
@@ -1435,6 +1464,9 @@ const HearoApp = () => {
     try { transcriberRef.current.clearTranscript(); } catch (_) {}  // clean slate on stop
     if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
     try { alertRef.current.stopAlertHaptics(); } catch (_) {}
+    try { haptics.stop(); } catch (_) {}
+    setActiveAlert(null);
+    setAmbientAlert(null);
     setLivePreds([]);
     setTranscriptLines([]);
     setInterimText('');
@@ -1474,9 +1506,9 @@ const HearoApp = () => {
   const StatusBadge = () => {
     // YAMNet (on-device) is the primary sound classifier in this build
     const yamnetBadges = {
-      idle:    { color: 'bg-white/10 text-white/60',          text: 'YAMNet: loading model…',      spin: false },
-      loading: { color: 'bg-[#FFE600]/10 text-[#FFE600]',     text: 'YAMNet: downloading (~10MB)…', spin: true  },
-      ready:   { color: 'bg-green-500/10 text-green-400',      text: 'YAMNet (on-device) ready ✓',  spin: false },
+      idle:    { color: 'bg-[var(--track)] text-[var(--text-3)]',          text: 'YAMNet: loading model…',      spin: false },
+      loading: { color: 'bg-[#FFE600]/10 text-[var(--accent-gold)]',     text: 'YAMNet: downloading (~10MB)…', spin: true  },
+      ready:   { color: 'bg-green-500/10 text-green-600 dark:text-green-400', text: 'YAMNet (on-device) ready ✓',  spin: false },
       error:   { color: 'bg-red-500/10 text-red-400',          text: 'YAMNet load error — freq fallback', spin: false },
     };
     const yb = yamnetBadges[yamnetStatus] || yamnetBadges.idle;
@@ -1493,7 +1525,7 @@ const HearoApp = () => {
           <span>{yb.text}</span>
         </div>
         {geminiActive && (
-          <div className="flex items-center space-x-1.5 text-xs px-2 py-1 rounded-full bg-[#00A8E1]/10 text-[#00A8E1]">
+          <div className="flex items-center space-x-1.5 text-xs px-2 py-1 rounded-full bg-[#00A8E1]/10 text-[var(--accent-cyan)]">
             <Cpu className="w-3 h-3" />
             <span>Gemini (transcription) ✓</span>
           </div>
@@ -1504,30 +1536,31 @@ const HearoApp = () => {
 
   // ==================== HOME SCREEN ====================
   const HomeScreen = () => (
-    <div className="bg-[#0B1740] min-h-screen">
-      <div className="bg-[#1E3FB8] px-6 py-8 text-white border-b border-white/10">
+    <div className="bg-[var(--page)] min-h-screen app-screen">
+      <div className="bg-[var(--header)] px-6 py-8 text-white border-b border-[var(--card-border)]">
         <div className="flex items-center space-x-4 mb-1">
           <img src={hearoLogo} alt="Hearo" className="w-14 h-14 object-contain drop-shadow-lg" />
           <div>
-            <p className="text-[#00A8E1] text-sm font-medium tracking-wide">AI-Powered Sound Alert System</p>
+            <h1 className="text-2xl font-bold">Hearo</h1>
+            <p className="text-[#B4ECFF] text-sm font-medium tracking-wide">AI-Powered Sound Alert System</p>
           </div>
         </div>
       </div>
 
       <div className="p-6 space-y-6 pb-24">
         {/* Status Card */}
-        <div className="bg-[#1E3FB8]/30 rounded-2xl p-6 border border-white/10 relative z-10">
+        <div className="bg-[var(--card)] shadow-sm rounded-2xl p-6 border border-[var(--card-border)] relative z-10">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-xl font-bold text-white">System Status</h2>
-            <div className={`p-2 rounded-full ${isListening ? 'bg-[#00A8E1]/20' : 'bg-white/10'}`}>
-              {isListening ? <Volume2 className="w-6 h-6 text-[#00A8E1]" /> : <VolumeX className="w-6 h-6 text-white/50" />}
+            <h2 className="text-xl font-bold text-[var(--text-1)]">System Status</h2>
+            <div className={`p-2 rounded-full ${isListening ? 'bg-[#00A8E1]/20' : 'bg-[var(--track)]'}`}>
+              {isListening ? <Volume2 className="w-6 h-6 text-[var(--accent-cyan)]" /> : <VolumeX className="w-6 h-6 text-[var(--text-4)]" />}
             </div>
           </div>
 
           <div className="mb-3"><StatusBadge /></div>
 
           {/* On-device diagnostics — helps debug mobile capture/detection */}
-          {isListening && debugInfo && (
+          {debugEnabled && isListening && debugInfo && (
             <div className="mb-3 p-3 rounded-lg bg-black/30 border border-white/10 font-mono text-[11px] text-white/80 leading-relaxed">
               <div className="text-[#00A8E1] font-semibold mb-1">🔧 Debug</div>
               <div>mic level: <span className={debugInfo.level > 10 ? 'text-green-400' : 'text-[#FFE600]'}>{debugInfo.level}</span> (need &gt;10)</div>
@@ -1556,7 +1589,7 @@ const HearoApp = () => {
           )}
 
           <div className="flex items-center justify-between mb-4">
-            <span className="text-white/70">
+            <span className="text-[var(--text-3)]">
               {isListening ? 'Listening for sounds' : isStarting ? 'Starting…' : 'Not listening'}
             </span>
             <button
@@ -1566,7 +1599,7 @@ const HearoApp = () => {
                 isListening
                   ? 'bg-red-500 hover:bg-red-600 text-white'
                   : isStarting
-                  ? 'bg-gray-400 text-white'
+                  ? 'bg-gray-400 text-[var(--text-1)]'
                   : 'bg-[#FFE600] hover:bg-[#E6CF00] text-[#1E3FB8] font-bold'
               }`}
             >
@@ -1574,64 +1607,109 @@ const HearoApp = () => {
             </button>
           </div>
 
-          <div className="border-t pt-4">
-            <button onClick={simulateCriticalScenario} disabled={!!emergencyScenario}
-              className="w-full px-4 py-3 bg-[#FFE600] hover:bg-[#E6CF00] disabled:bg-white/20 disabled:text-white/40 text-[#1E3FB8] rounded-lg font-bold transition-all">
-              🚨 Demo: Kitchen Fire Emergency
-            </button>
-            <p className="text-xs text-white/60 mt-2 text-center">Simulate how Hearo saves lives in critical situations</p>
-          </div>
+          {demoModeEnabled && (
+            <div className="border-t pt-4">
+              <button onClick={simulateCriticalScenario} disabled={!!emergencyScenario}
+                className="w-full px-4 py-3 bg-[#FFE600] hover:bg-[#E6CF00] disabled:bg-[var(--slider)] disabled:text-[var(--text-4)] text-[#1E3FB8] rounded-lg font-bold transition-all">
+                🚨 Demo: Kitchen Fire Emergency
+              </button>
+              <p className="text-xs text-[var(--text-3)] mt-2 text-center">Simulate how Hearo saves lives in critical situations</p>
+            </div>
+          )}
 
-          {/* Recent Alerts — below Start/Demo */}
-          {recentAlerts.length > 0 && (
-            <div className="mt-4 bg-[#1E3FB8]/30 rounded-2xl p-4 border border-white/10">
-              <div className="flex items-center justify-between gap-2 mb-3">
-                <h3 className="text-lg font-bold text-white whitespace-nowrap">🔔 Recent Alerts</h3>
-                <button
-                  onClick={() => { localStorage.removeItem('hearo_alerts'); setRecentAlerts([]); alertRef.current.stopAlertHaptics(); }}
-                  className="shrink-0 text-xs px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 hover:text-white/90 transition-all">
-                  Clear
-                </button>
+          {/* Live status — current activity, above the history log */}
+          {isListening && (
+            <div className="mt-4">
+              <div className="flex justify-between text-sm text-[var(--text-3)] mb-2">
+                <span>Audio Level</span><span>{audioLevel}%</span>
               </div>
-              <div className="space-y-2.5">
-                {recentAlerts.slice(0, 5).map(alert => (
-                  <div key={alert.id} className="flex items-start gap-3 p-3 bg-white/5 rounded-xl"
-                    style={{ borderLeft: `4px solid ${UIUtils.getSeverityColor(alert.severity)}` }}>
-                    <div className={`shrink-0 p-2 rounded-lg ${
-                      alert.severity === 'critical' ? 'bg-red-500/20' : alert.severity === 'high' ? 'bg-[#FFE600]/20' : 'bg-[#00A8E1]/20'
-                    }`}>{UIUtils.getAlertIcon(alert.type)}</div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-start justify-between gap-2">
-                        <p className="font-semibold text-white truncate">
-                          {alert.rawLabel || UIUtils.getAlertText(alert.soundType) || UIUtils.getAlertText(alert.type)}
-                        </p>
-                        <span className="shrink-0 font-mono text-sm text-white/90 whitespace-nowrap">{alert.time}</span>
-                      </div>
-                      <div className="flex items-center flex-wrap gap-1.5 mt-1">
-                        <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
-                          alert.severity === 'critical' ? 'bg-red-500/20 text-red-300' :
-                          alert.severity === 'high'     ? 'bg-[#FFE600]/20 text-[#FFE600]' :
-                                                         'bg-[#00A8E1]/20 text-[#00A8E1]'
-                        }`}>{UIUtils.getAlertText(alert.type)}</span>
-                        <span className="text-xs text-white/50 truncate">{alert.location}</span>
-                      </div>
-                      <p className="text-xs text-[#00A8E1] mt-1 truncate">{alert.confidence}% • {alert.source}</p>
-                    </div>
-                  </div>
-                ))}
+              <div className="w-full bg-[var(--track)] rounded-full h-2">
+                <div className={`h-2 rounded-full transition-all duration-150 ${
+                  audioLevel > 60 ? 'bg-[#FFE600]' : audioLevel > 30 ? 'bg-[#00A8E1]' : 'bg-[#00A8E1]/60'
+                }`} style={{ width: `${audioLevel}%` }} />
               </div>
             </div>
           )}
 
+          {/* Dual-system status when listening */}
           {isListening && (
-            <div className="mt-4">
-              <div className="flex justify-between text-sm text-white/70 mb-2">
-                <span>Audio Level</span><span>{audioLevel}%</span>
+            <div className="mt-4 space-y-2">
+              {/* Sound Detection */}
+              <div className={`p-2.5 rounded-lg border flex items-center justify-between ${
+                isProcessing ? 'bg-[#FFE600]/10 border-[#FFE600]/30' : 'bg-[var(--row)] border-[var(--card-border)]'
+              }`}>
+                <div className="flex items-center space-x-2">
+                  {isProcessing
+                    ? <div className="animate-spin rounded-full h-3.5 w-3.5 border-b-2 border-[#FFE600] flex-shrink-0" />
+                    : <div className="w-3.5 h-3.5 rounded-full bg-[#00A8E1]/60 flex-shrink-0" />}
+                  <span className="text-sm text-[var(--text-2)]">
+                    🔊 Sound detection
+                  </span>
+                </div>
+                <span className="text-xs text-[var(--text-4)] font-mono">
+                  every {detectionInterval / 1000}s
+                </span>
               </div>
-              <div className="w-full bg-white/10 rounded-full h-2">
-                <div className={`h-2 rounded-full transition-all duration-150 ${
-                  audioLevel > 60 ? 'bg-[#FFE600]' : audioLevel > 30 ? 'bg-[#00A8E1]' : 'bg-[#00A8E1]/60'
-                }`} style={{ width: `${audioLevel}%` }} />
+              {/* Transcription */}
+              <div className="p-2.5 rounded-lg border bg-[var(--row)] border-[var(--card-border)] flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <div className="w-2 h-2 bg-[#FFE600] rounded-full animate-pulse flex-shrink-0" />
+                  <span className="text-sm text-[var(--text-2)]">
+                    💬 Transcription
+                  </span>
+                </div>
+                <span className="text-xs text-[var(--accent-cyan)]">
+                  {transcriberRef.current.supported ? 'live' : 'Gemini only'}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* Recent Alerts — below live status */}
+          {recentAlerts.length > 0 && (
+            <div className="mt-4 bg-[var(--card)] shadow-sm rounded-2xl p-4 border border-[var(--card-border)]">
+              <div className="flex items-center justify-between gap-2 mb-3">
+                <h3 className="text-lg font-bold text-[var(--text-1)] whitespace-nowrap">🔔 Recent Alerts</h3>
+                <button
+                  onClick={() => { localStorage.removeItem('hearo_alerts'); setRecentAlerts([]); alertRef.current.stopAlertHaptics(); }}
+                  className="shrink-0 text-xs px-3 py-1.5 rounded-lg bg-[var(--row)] hover:bg-[var(--track)] text-[var(--text-3)] hover:text-[var(--text-1)] transition-all">
+                  Clear
+                </button>
+              </div>
+              <div className="space-y-2.5">
+                {recentAlerts.slice(0, 5).map(alert => {
+                  const sevColor = UIUtils.getSeverityColor(alert.severity);
+                  const conf = alert.confidence || 0;
+                  const confColor = conf >= 80 ? '#22C55E' : conf >= 60 ? '#00A8E1' : '#94A3B8';
+                  const sourceShort = (alert.source || '').split(' (')[0];
+                  return (
+                  <div key={alert.id} className="flex items-start gap-3 p-3 bg-[var(--row-alt)] rounded-xl shadow-sm"
+                    style={{ borderLeft: `4px solid ${sevColor}`, opacity: conf < 60 ? 0.6 : 1 }}>
+                    <div className="shrink-0 p-2.5 rounded-xl"
+                      style={{ color: sevColor, backgroundColor: `${sevColor}22` }}>{UIUtils.getAlertIcon(alert.type)}</div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="font-semibold text-[var(--text-1)] truncate">
+                            {alert.rawLabel || UIUtils.getAlertText(alert.soundType) || UIUtils.getAlertText(alert.type)}
+                          </p>
+                          <p className="text-sm text-[var(--text-3)] truncate">{alert.location}</p>
+                        </div>
+                        <div className="shrink-0 text-right">
+                          <span className="font-mono text-sm text-[var(--text-1)] whitespace-nowrap">{alert.time}</span>
+                          <div className="flex items-center justify-end gap-1.5 mt-1.5">
+                            <div className="w-12 h-1.5 rounded-full bg-[var(--track)] overflow-hidden">
+                              <div className="h-full rounded-full" style={{ width: `${conf}%`, backgroundColor: confColor }} />
+                            </div>
+                            <span className="font-mono text-[10px] text-[var(--text-4)]">{conf}%</span>
+                          </div>
+                        </div>
+                      </div>
+                      <p className="text-xs font-medium text-[var(--accent-cyan)] mt-1.5 truncate">{sourceShort}</p>
+                    </div>
+                  </div>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -1640,7 +1718,7 @@ const HearoApp = () => {
             <div className="mt-4 p-4 bg-red-500/10 border-2 border-red-400/30 rounded-lg">
               <div className="flex items-center space-x-3 mb-3">
                 <AlertTriangle className="w-6 h-6 text-red-600 animate-pulse" />
-                <h3 className="font-bold text-white">CRITICAL EMERGENCY DETECTED</h3>
+                <h3 className="font-bold text-[var(--text-1)]">CRITICAL EMERGENCY DETECTED</h3>
               </div>
               <div className="space-y-2 text-sm">
                 {[
@@ -1650,7 +1728,7 @@ const HearoApp = () => {
                   { step: 4, label: '📞 Fire department (199) contacted with GPS location' },
                   { step: 5, label: '👨‍👩‍👧‍👦 Family members notified via SMS' },
                 ].map(({ step, label }) => (
-                  <div key={step} className={`flex items-center space-x-2 ${scenarioStep >= step ? 'text-green-400' : 'text-white/50'}`}>
+                  <div key={step} className={`flex items-center space-x-2 ${scenarioStep >= step ? 'text-green-400' : 'text-[var(--text-4)]'}`}>
                     <div className={`w-3 h-3 rounded-full flex-shrink-0 ${scenarioStep >= step ? 'bg-green-500/100' : 'bg-gray-300'}`} />
                     <span>{label}</span>
                   </div>
@@ -1664,45 +1742,11 @@ const HearoApp = () => {
             </div>
           )}
 
-          {/* Dual-system status when listening */}
-          {isListening && (
-            <div className="mt-4 space-y-2">
-              {/* Sound Detection */}
-              <div className={`p-2.5 rounded-lg border flex items-center justify-between ${
-                isProcessing ? 'bg-[#FFE600]/10 border-[#FFE600]/30' : 'bg-white/5 border-white/10'
-              }`}>
-                <div className="flex items-center space-x-2">
-                  {isProcessing
-                    ? <div className="animate-spin rounded-full h-3.5 w-3.5 border-b-2 border-[#FFE600] flex-shrink-0" />
-                    : <div className="w-3.5 h-3.5 rounded-full bg-[#00A8E1]/60 flex-shrink-0" />}
-                  <span className="text-sm text-white/80">
-                    🔊 Sound detection
-                  </span>
-                </div>
-                <span className="text-xs text-white/50 font-mono">
-                  every {detectionInterval / 1000}s
-                </span>
-              </div>
-              {/* Transcription */}
-              <div className="p-2.5 rounded-lg border bg-white/5 border-white/10 flex items-center justify-between">
-                <div className="flex items-center space-x-2">
-                  <div className="w-2 h-2 bg-[#FFE600] rounded-full animate-pulse flex-shrink-0" />
-                  <span className="text-sm text-white/80">
-                    💬 Transcription
-                  </span>
-                </div>
-                <span className="text-xs text-[#00A8E1]">
-                  {transcriberRef.current.supported ? 'live' : 'Gemini only'}
-                </span>
-              </div>
-            </div>
-          )}
-
           {warmingUp && (
             <div className="mt-2 p-3 bg-[#FFE600]/10 rounded-lg border border-[#FFE600]/30">
               <div className="flex items-center space-x-3">
                 <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-[#FFE600]" />
-                <span className="text-white font-medium text-sm">HF model warming up (~20s first time)...</span>
+                <span className="text-[var(--text-1)] font-medium text-sm">HF model warming up (~20s first time)...</span>
               </div>
             </div>
           )}
@@ -1710,63 +1754,65 @@ const HearoApp = () => {
 
         {/* Live Transcript Panel */}
         {isListening && transcriptEnabled && transcriberRef.current.supported && showTranscript && (
-          <div className="bg-[#1E3FB8]/30 rounded-2xl p-5 border border-white/10">
+          <div className="bg-[var(--card)] shadow-sm rounded-2xl p-5 border border-[var(--card-border)]">
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center space-x-2">
                 <div className="w-2 h-2 bg-[#FFE600] rounded-full animate-pulse" />
-                <h3 className="text-base font-bold text-white">Live Transcript</h3>
-                <span className="text-xs text-white/50">
+                <h3 className="text-base font-bold text-[var(--text-1)]">Live Transcript</h3>
+                <span className="text-xs text-[var(--text-4)]">
                   ({transcriptLang === 'th-TH' ? 'Thai' : transcriptLang === 'en-US' ? 'English' : transcriptLang})
                 </span>
               </div>
               <button onClick={() => transcriberRef.current.clearTranscript()}
-                className="text-xs text-white/50 hover:text-white/70">Clear</button>
+                className="text-xs text-[var(--text-4)] hover:text-[var(--text-3)]">Clear</button>
             </div>
 
             {/* Transcript lines */}
             <div className="space-y-1 max-h-40 overflow-y-auto">
               {transcriptLines.length === 0 && !interimText && (
-                <p className="text-white/50 text-sm italic">Listening for speech...</p>
+                <p className="text-[var(--text-4)] text-sm italic">Listening for speech...</p>
               )}
               {transcriptLines.slice(-8).map((line, i) => (
                 <div key={i} className="flex items-start space-x-2">
-                  <span className="text-xs text-white/50 font-mono flex-shrink-0 mt-0.5">{line.time}</span>
-                  <p className="text-sm text-white flex-1">{line.text}</p>
-                  <span className="text-xs text-white/50 flex-shrink-0">{line.confidence}%</span>
+                  <span className="text-xs text-[var(--text-4)] font-mono flex-shrink-0 mt-0.5">{line.time}</span>
+                  <p className="text-sm text-[var(--text-1)] flex-1">{line.text}</p>
+                  <span className="text-xs text-[var(--text-4)] flex-shrink-0">{line.confidence}%</span>
                 </div>
               ))}
               {/* Interim (partial, still being recognised) */}
               {interimText && (
-                <p className="text-sm text-white/50 italic">{interimText}...</p>
+                <p className="text-sm text-[var(--text-4)] italic">{interimText}...</p>
               )}
             </div>
 
             {!transcriberRef.current.supported && (
-              <p className="text-xs text-[#FFE600] mt-2">⚠️ Speech recognition not supported in this browser. Use Chrome or Edge.</p>
+              <p className="text-xs text-[var(--accent-gold)] mt-2">⚠️ Speech recognition not supported in this browser. Use Chrome or Edge.</p>
             )}
           </div>
         )}
 
         {/* Somchai */}
+        {impactStoryEnabled && (
         <div className="bg-[#00A8E1]/10 border-2 border-[#00A8E1]/30 rounded-2xl p-6">
           <div className="flex items-start space-x-3 mb-4">
             <div className="w-10 h-10 bg-[#00A8E1]/20 rounded-full flex items-center justify-center flex-shrink-0">
-              <Users className="w-5 h-5 text-[#00A8E1]" />
+              <Users className="w-5 h-5 text-[var(--accent-cyan)]" />
             </div>
             <div>
-              <h4 className="font-semibold text-white">Real Impact: Somchai's Story</h4>
-              <p className="text-sm text-[#00A8E1] mt-1">
+              <h4 className="font-semibold text-[var(--text-1)]">Real Impact: Somchai's Story</h4>
+              <p className="text-sm text-[var(--accent-cyan)] mt-1">
                 "Hearo saved my life when I couldn't hear the smoke alarm at 3 AM. The AI detected the fire and notified my neighbors — all within 15 seconds."
               </p>
-              <p className="text-xs text-[#00A8E1] mt-2 italic">— Somchai P., Bangkok resident with hearing impairment</p>
+              <p className="text-xs text-[var(--accent-cyan)] mt-2 italic">— Somchai P., Bangkok resident with hearing impairment</p>
             </div>
           </div>
           <div className="grid grid-cols-3 gap-4 text-center text-sm">
-            <div><div className="text-2xl font-bold text-red-400">3 AM</div><div className="text-xs text-white/60">Fire started</div></div>
-            <div><div className="text-2xl font-bold text-[#FFE600]">15s</div><div className="text-xs text-white/60">Help contacted</div></div>
-            <div><div className="text-2xl font-bold text-green-400">5 min</div><div className="text-xs text-white/60">Fire contained</div></div>
+            <div><div className="text-2xl font-bold text-red-400">3 AM</div><div className="text-xs text-[var(--text-3)]">Fire started</div></div>
+            <div><div className="text-2xl font-bold text-amber-400">15s</div><div className="text-xs text-[var(--text-3)]">Help contacted</div></div>
+            <div><div className="text-2xl font-bold text-green-400">5 min</div><div className="text-xs text-[var(--text-3)]">Fire contained</div></div>
           </div>
         </div>
+        )}
 
         <div className="grid grid-cols-2 gap-4">
           <button onClick={() => setCurrentScreen('settings')}
@@ -1784,18 +1830,40 @@ const HearoApp = () => {
 
   // ==================== SETTINGS SCREEN ====================
   const SettingsScreen = () => (
-    <div className="bg-[#0B1740] min-h-screen">
-      <div className="bg-[#1E3FB8] px-6 py-8 text-white border-b border-white/10">
+    <div className="bg-[var(--page)] min-h-screen app-screen">
+      <div className="bg-[var(--header)] px-6 py-8 text-white border-b border-[var(--card-border)]">
         <h1 className="text-2xl font-bold">Settings</h1>
         <p className="text-[#00A8E1] text-sm">Configure your Hearo system</p>
       </div>
 
       <div className="p-6 space-y-6 pb-24">
 
+        {/* Appearance */}
+        <div className="bg-[var(--card)] shadow-sm rounded-2xl p-6 border border-[var(--card-border)]">
+          <h3 className="text-lg font-semibold text-[var(--text-1)] mb-4 flex items-center">
+            <Sun className="w-5 h-5 mr-3 text-[var(--accent-cyan)]" />Appearance
+          </h3>
+          <div className="grid grid-cols-2 gap-2">
+            {[
+              { mode: 'light', label: 'Light', Icon: Sun },
+              { mode: 'dark',  label: 'Dark',  Icon: Moon },
+            ].map(({ mode, label, Icon }) => (
+              <button key={mode} onClick={() => setTheme(mode)}
+                className={`flex items-center justify-center gap-2 p-3 rounded-xl border text-sm font-medium transition-all ${
+                  theme === mode
+                    ? 'bg-[var(--track)] border-[#00A8E1]/40 text-[var(--accent-cyan)]'
+                    : 'bg-[var(--row)] border-transparent text-[var(--text-2)] hover:bg-[var(--track)]'
+                }`}>
+                <Icon className="w-4 h-4" />{label}{theme === mode && ' ✓'}
+              </button>
+            ))}
+          </div>
+        </div>
+
         {/* AI Service Status */}
-        <div className="bg-[#1E3FB8]/30 rounded-2xl p-6 border border-white/10 relative z-10">
-          <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
-            <Cpu className="w-5 h-5 mr-3 text-[#00A8E1]" />AI Service Status
+        <div className="bg-[var(--card)] shadow-sm rounded-2xl p-6 border border-[var(--card-border)] relative z-10">
+          <h3 className="text-lg font-semibold text-[var(--text-1)] mb-4 flex items-center">
+            <Cpu className="w-5 h-5 mr-3 text-[var(--accent-cyan)]" />AI Service Status
           </h3>
 
           {/* Status rows */}
@@ -1809,20 +1877,20 @@ const HearoApp = () => {
                 detail: modelServices.geminiApi ? 'transcription + sound context ✓' : 'not configured (add key below)' },
               { label: 'Local Storage', ok: modelServices.localStorage, detail: 'alert history' },
             ].map(({ label, ok, detail }) => (
-              <div key={label} className={`flex items-center justify-between p-3 rounded-lg ${ok ? 'bg-green-500/10' : 'bg-white/5'}`}>
+              <div key={label} className={`flex items-center justify-between p-3 rounded-lg ${ok ? 'bg-green-500/10' : 'bg-[var(--row)]'}`}>
                 <div>
-                  <span className="font-medium text-sm">{label}</span>
-                  <span className="text-xs text-white/60 ml-2">{detail}</span>
+                  <div className="font-medium text-sm">{label}</div>
+                  <div className="text-xs text-[var(--text-3)] mt-0.5">{detail}</div>
                 </div>
-                <div className={`w-2.5 h-2.5 rounded-full ${ok ? 'bg-green-500' : yamnetStatus === 'loading' && label === 'YAMNet (on-device)' ? 'bg-[#FFE600] animate-pulse' : 'bg-white/20'}`} />
+                <div className={`w-2.5 h-2.5 rounded-full ${ok ? 'bg-green-500' : yamnetStatus === 'loading' && label === 'YAMNet (on-device)' ? 'bg-[#FFE600] animate-pulse' : 'bg-[var(--slider)]'}`} />
               </div>
             ))}
           </div>
 
           {/* Detection model A/B toggle */}
           <div className="mb-4">
-            <label className="block text-sm font-medium text-white/90 mb-1">Detection Model</label>
-            <p className="text-xs text-white/50 mb-3">Switch live to compare. Both run on-device, free.</p>
+            <label className="block text-sm font-medium text-[var(--text-1)] mb-1">Detection Model</label>
+            <p className="text-xs text-[var(--text-4)] mb-3">Switch live to compare. Both run on-device, free.</p>
             <div className="grid grid-cols-2 gap-2">
               {[
                 { mode: 'custom', title: 'Custom ESC-50', sub: 'Your trained model', stat: '98% on alerts' },
@@ -1834,13 +1902,13 @@ const HearoApp = () => {
                   className={`p-3 rounded-xl border text-left transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
                     modelMode === mode
                       ? 'bg-[#FFE600]/10 border-[#FFE600]/40'
-                      : 'bg-white/5 border-white/10 hover:bg-white/10'
+                      : 'bg-[var(--row)] border-[var(--card-border)] hover:bg-[var(--track)]'
                   }`}>
-                  <div className={`text-sm font-semibold ${modelMode === mode ? 'text-[#FFE600]' : 'text-white/90'}`}>
+                  <div className={`text-sm font-semibold ${modelMode === mode ? 'text-[var(--accent-gold)]' : 'text-[var(--text-1)]'}`}>
                     {title}{modelMode === mode && ' ✓'}
                   </div>
-                  <div className="text-xs text-white/50 mt-0.5">{sub}</div>
-                  <div className={`text-xs mt-1 font-mono ${modelMode === mode ? 'text-[#FFE600]/80' : 'text-[#00A8E1]'}`}>{stat}</div>
+                  <div className="text-xs text-[var(--text-4)] mt-0.5">{sub}</div>
+                  <div className={`text-xs mt-1 font-mono ${modelMode === mode ? 'text-[var(--accent-gold)]/80' : 'text-[var(--accent-cyan)]'}`}>{stat}</div>
                 </button>
               ))}
             </div>
@@ -1852,10 +1920,10 @@ const HearoApp = () => {
           {/* Model info */}
           <div className="p-4 bg-[#00A8E1]/10 rounded-xl border border-[#00A8E1]/20 mb-3">
             <div className="flex items-start space-x-3">
-              <BarChart2 className="w-5 h-5 text-[#00A8E1] mt-0.5 flex-shrink-0" />
+              <BarChart2 className="w-5 h-5 text-[var(--accent-cyan)] mt-0.5 flex-shrink-0" />
               <div>
-                <p className="text-sm font-semibold text-white">Gemini 2.5 Flash (Recommended)</p>
-                <p className="text-xs text-[#00A8E1] mt-1">
+                <p className="text-sm font-semibold text-[var(--text-1)]">Gemini 2.5 Flash (Recommended)</p>
+                <p className="text-xs text-[var(--accent-cyan)] mt-1">
                   Google's multimodal AI — understands audio directly, identifies sounds <strong>and</strong> transcribes speech in a single call.
                   Free tier: 15 req/min. Significantly more accurate than frequency analysis.
                 </p>
@@ -1866,7 +1934,7 @@ const HearoApp = () => {
             <div className="flex items-start space-x-3">
               <BarChart2 className="w-5 h-5 text-green-400 mt-0.5 flex-shrink-0" />
               <div>
-                <p className="text-sm font-semibold text-white">YAMNet — On-Device (Primary Sound Classifier)</p>
+                <p className="text-sm font-semibold text-[var(--text-1)]">YAMNet — On-Device (Primary Sound Classifier)</p>
                 <p className="text-xs text-green-400 mt-1">
                   Google's audio classification model. 521 AudioSet classes, runs entirely
                   in your browser — no API key, no cost, no rate limits, no internet needed.
@@ -1878,15 +1946,15 @@ const HearoApp = () => {
         </div>
 
         {/* Gemini API Key — PRIMARY */}
-        <div className="bg-[#1E3FB8]/30 rounded-2xl p-6 border-2 border-[#00A8E1]/50">
+        <div className="bg-[var(--card)] shadow-sm rounded-2xl p-6 border-2 border-[#00A8E1]/50">
           <div className="flex items-center space-x-2 mb-1">
-            <Key className="w-5 h-5 text-[#00A8E1]" />
-            <h3 className="text-lg font-semibold text-white">Google Gemini API Key</h3>
-            <span className="text-xs bg-[#00A8E1]/20 text-[#00A8E1] px-2 py-0.5 rounded-full font-medium">Recommended</span>
+            <Key className="w-5 h-5 text-[var(--accent-cyan)]" />
+            <h3 className="text-lg font-semibold text-[var(--text-1)]">Google Gemini API Key</h3>
+            <span className="text-xs bg-[#00A8E1]/20 text-[var(--accent-cyan)] px-2 py-0.5 rounded-full font-medium">Recommended</span>
           </div>
-          <p className="text-xs text-white/60 mb-4">
+          <p className="text-xs text-[var(--text-3)] mb-4">
             Best accuracy + speech transcription. Free tier available at{' '}
-            <span className="text-[#00A8E1] underline">aistudio.google.com/app/apikey</span>
+            <span className="text-[var(--accent-cyan)] underline">aistudio.google.com/app/apikey</span>
           </p>
           <div className="flex space-x-2">
             <input
@@ -1894,7 +1962,7 @@ const HearoApp = () => {
               value={geminiKeyInput}
               onChange={e => setGeminiKeyInput(e.target.value)}
               placeholder="AIza..."
-              className="flex-1 p-3 bg-white/10 border border-[#00A8E1]/40 rounded-lg text-sm font-mono text-white placeholder-white/40 focus:outline-none focus:ring-2 focus:ring-[#00A8E1]/50"
+              className="flex-1 p-3 bg-[var(--track)] border border-[#00A8E1]/40 rounded-lg text-sm font-mono text-[var(--text-1)] placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-[#00A8E1]/50"
             />
             <button onClick={saveGeminiKey}
               className="px-4 py-3 bg-[#00A8E1] hover:bg-[#0090C4] text-white rounded-lg font-semibold text-sm transition-colors">
@@ -1907,7 +1975,7 @@ const HearoApp = () => {
             </p>
           )}
           {!modelServices.geminiApi && (
-            <p className="mt-2 text-xs text-white/60">
+            <p className="mt-2 text-xs text-[var(--text-3)]">
               Without a key, YAMNet handles sound detection and Web Speech handles transcription (English only).
             </p>
           )}
@@ -1915,72 +1983,72 @@ const HearoApp = () => {
 
         {/* Live Predictions */}
         {isListening && liveTopPredictions.length > 0 && (
-          <div className="bg-[#1E3FB8]/30 rounded-2xl p-6 border border-white/10">
-            <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
+          <div className="bg-[var(--card)] shadow-sm rounded-2xl p-6 border border-[var(--card-border)]">
+            <h3 className="text-lg font-semibold text-[var(--text-1)] mb-4 flex items-center">
               <Activity className="w-5 h-5 mr-3 text-green-600 animate-pulse" />
               Live Predictions
-              <span className="ml-2 text-xs text-white/50 font-normal">updates every 8s</span>
+              <span className="ml-2 text-xs text-[var(--text-4)] font-normal">updates every 8s</span>
             </h3>
             <div className="space-y-3">
               {liveTopPredictions.slice(0, 7).map((pred, i) => (
                 <div key={i}>
                   <div className="flex justify-between text-sm mb-1">
-                    <span className={`font-medium truncate ${pred.category ? 'text-[#FFE600]' : 'text-white/60'}`}>
+                    <span className={`font-medium truncate ${pred.category ? 'text-[var(--accent-gold)]' : 'text-[var(--text-3)]'}`}>
                       {pred.className}
-                      {pred.category && <span className="ml-1.5 text-xs bg-[#FFE600]/20 text-[#FFE600] px-1.5 py-0.5 rounded-full font-semibold">match</span>}
+                      {pred.category && <span className="ml-1.5 text-xs bg-[#FFE600]/20 text-[var(--accent-gold)] px-1.5 py-0.5 rounded-full font-semibold">match</span>}
                     </span>
-                    <span className="text-white/60 font-mono ml-2 flex-shrink-0">
+                    <span className="text-[var(--text-3)] font-mono ml-2 flex-shrink-0">
                       {Math.round(pred.confidence * 100)}%
                     </span>
                   </div>
-                  <div className="w-full bg-white/10 rounded-full h-2">
-                    <div className={`h-2 rounded-full transition-all duration-500 ${pred.category ? 'bg-[#FFE600]' : 'bg-white/20'}`}
+                  <div className="w-full bg-[var(--track)] rounded-full h-2">
+                    <div className={`h-2 rounded-full transition-all duration-500 ${pred.category ? 'bg-[#FFE600]' : 'bg-[var(--slider)]'}`}
                       style={{ width: `${Math.round(pred.confidence * 100)}%` }} />
                   </div>
                 </div>
               ))}
             </div>
-            <p className="text-xs text-white/50 mt-3 text-center">
+            <p className="text-xs text-[var(--text-4)] mt-3 text-center">
               Yellow = Hearo-relevant sound detected
             </p>
           </div>
         )}
 
         {/* Transcription Settings */}
-        <div className="bg-[#1E3FB8]/30 rounded-2xl p-6 border border-white/10">
-          <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
+        <div className="bg-[var(--card)] shadow-sm rounded-2xl p-6 border border-[var(--card-border)]">
+          <h3 className="text-lg font-semibold text-[var(--text-1)] mb-4 flex items-center">
             <span className="text-xl mr-3">💬</span>Speech Transcription
           </h3>
 
           <div className="space-y-4">
             {/* Enable toggle */}
-            <label className="flex items-center justify-between p-4 bg-white/5 rounded-lg cursor-pointer">
+            <label className="flex items-center justify-between p-4 bg-[var(--row)] rounded-lg cursor-pointer">
               <div>
                 <span className="font-medium">Live Captions</span>
-                <p className="text-xs text-white/60 mt-0.5">Transcribe speech while listening (Web Speech API)</p>
+                <p className="text-xs text-[var(--text-3)] mt-0.5">Transcribe speech while listening (Web Speech API)</p>
               </div>
               <input type="checkbox" checked={transcriptEnabled}
                 onChange={e => {
                   setTranscriptEnabled(e.target.checked);
                   if (!e.target.checked) transcriberRef.current.stop();
                 }}
-                className="w-5 h-5 text-[#00A8E1] rounded" />
+                className="w-5 h-5 text-[var(--accent-cyan)] rounded" />
             </label>
 
             {/* Show/hide on home */}
-            <label className="flex items-center justify-between p-4 bg-white/5 rounded-lg cursor-pointer">
+            <label className="flex items-center justify-between p-4 bg-[var(--row)] rounded-lg cursor-pointer">
               <div>
                 <span className="font-medium">Show on Home Screen</span>
-                <p className="text-xs text-white/60 mt-0.5">Display transcript panel while listening</p>
+                <p className="text-xs text-[var(--text-3)] mt-0.5">Display transcript panel while listening</p>
               </div>
               <input type="checkbox" checked={showTranscript}
                 onChange={e => setShowTranscript(e.target.checked)}
-                className="w-5 h-5 text-[#00A8E1] rounded" />
+                className="w-5 h-5 text-[var(--accent-cyan)] rounded" />
             </label>
 
             {/* Language selector */}
             <div>
-              <label className="block text-sm font-medium text-white/90 mb-2">Transcription Language</label>
+              <label className="block text-sm font-medium text-[var(--text-1)] mb-2">Transcription Language</label>
               <div className="grid grid-cols-2 gap-2">
                 {[
                   { code: 'th-TH', label: '🇹🇭 Thai' },
@@ -1994,7 +2062,7 @@ const HearoApp = () => {
                     className={`p-2 rounded-lg text-sm font-medium border transition-colors ${
                       transcriptLang === code
                         ? 'bg-[#1E3FB8] text-white border-purple-600'
-                        : 'bg-white/5 text-white/70 border-white/10 hover:bg-white/10'
+                        : 'bg-[var(--row)] text-[var(--text-3)] border-[var(--card-border)] hover:bg-[var(--track)]'
                     }`}>
                     {label}
                   </button>
@@ -2004,20 +2072,20 @@ const HearoApp = () => {
 
             {/* Browser support note */}
             <div className="p-3 bg-[#00A8E1]/10 rounded-lg">
-              <p className="text-xs text-[#00A8E1]">
+              <p className="text-xs text-[var(--accent-cyan)]">
                 <strong>Web Speech API</strong> — built into Chrome & Edge. Gemini transcribes Thai &amp; English only.
                 {!transcriberRef.current.supported && (
-                  <span className="text-[#FFE600] block mt-1">⚠️ Not supported in this browser.</span>
+                  <span className="text-[var(--accent-gold)] block mt-1">⚠️ Not supported in this browser.</span>
                 )}
               </p>
             </div>
 
             {/* Live transcript preview in settings */}
             {isListening && transcriptLines.length > 0 && (
-              <div className="p-3 bg-white/5 rounded-lg border border-white/10 max-h-32 overflow-y-auto">
-                <p className="text-xs text-white/60 mb-2">Recent transcript:</p>
+              <div className="p-3 bg-[var(--row)] rounded-lg border border-[var(--card-border)] max-h-32 overflow-y-auto">
+                <p className="text-xs text-[var(--text-3)] mb-2">Recent transcript:</p>
                 {transcriptLines.slice(-5).map((line, i) => (
-                  <p key={i} className="text-sm text-white/90">{line.text}</p>
+                  <p key={i} className="text-sm text-[var(--text-1)]">{line.text}</p>
                 ))}
               </div>
             )}
@@ -2025,28 +2093,28 @@ const HearoApp = () => {
         </div>
 
         {/* Detection Config */}
-        <div className="bg-[#1E3FB8]/30 rounded-2xl p-6 border border-white/10">
-          <h3 className="text-xl font-semibold text-white mb-4 flex items-center">
-            <Wifi className="w-6 h-6 mr-3 text-[#00A8E1]" />Detection Configuration
+        <div className="bg-[var(--card)] shadow-sm rounded-2xl p-6 border border-[var(--card-border)]">
+          <h3 className="text-xl font-semibold text-[var(--text-1)] mb-4 flex items-center">
+            <Wifi className="w-6 h-6 mr-3 text-[var(--accent-cyan)]" />Detection Configuration
           </h3>
           <div className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-white/90 mb-2">Detection Sensitivity</label>
+              <label className="block text-sm font-medium text-[var(--text-1)] mb-2">Detection Sensitivity</label>
               <input type="range" min="1" max="10" value={sensitivity}
                 onChange={e => { const v = parseInt(e.target.value); setSensitivity(v); classRef.current.setSensitivity(v); }}
-                className="w-full h-2 bg-white/20 rounded-lg appearance-none cursor-pointer" />
-              <div className="flex justify-between text-xs text-white/60 mt-1">
+                className="w-full h-2 bg-[var(--slider)] rounded-lg appearance-none cursor-pointer" />
+              <div className="flex justify-between text-xs text-[var(--text-3)] mt-1">
                 <span>Conservative</span>
-                <span className="font-mono text-[#00A8E1]">{sensitivity}/10</span>
+                <span className="font-mono text-[var(--accent-cyan)]">{sensitivity}/10</span>
                 <span>Aggressive</span>
               </div>
-              <p className="text-xs text-white/50 mt-1">
+              <p className="text-xs text-[var(--text-4)] mt-1">
                 YAMNet confidence threshold: {Math.round(Math.max(0.30, 0.70 - (sensitivity / 10) * 0.40) * 100)}%
               </p>
             </div>
             <div>
-              <label className="block text-sm font-medium text-white/90 mb-2">Active AI Mode</label>
-              <div className="p-3 bg-white/5 rounded-lg text-sm text-white/90 border border-white/10">
+              <label className="block text-sm font-medium text-[var(--text-1)] mb-2">Active AI Mode</label>
+              <div className="p-3 bg-[var(--row)] rounded-lg text-sm text-[var(--text-1)] border border-[var(--card-border)]">
                 {(() => {
                   const engine = modelMode === 'custom' && customStatus === 'ready'
                     ? 'Custom ESC-50 (your trained model)'
@@ -2062,8 +2130,8 @@ const HearoApp = () => {
 
             {/* Detection Speed */}
             <div>
-              <label className="block text-sm font-medium text-white mb-1">Detection Speed</label>
-              <p className="text-xs text-white/50 mb-3">
+              <label className="block text-sm font-medium text-[var(--text-1)] mb-1">Detection Speed</label>
+              <p className="text-xs text-[var(--text-4)] mb-3">
                 How often YAMNet scans for sounds. Faster = more responsive. On-device, so no API quota cost.
               </p>
               <div className="grid grid-cols-3 gap-2">
@@ -2077,21 +2145,21 @@ const HearoApp = () => {
                     className={`p-3 rounded-xl border text-center transition-all ${
                       detectionInterval === ms
                         ? 'bg-[#FFE600] border-[#FFE600] text-[#1E3FB8]'
-                        : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10'
+                        : 'bg-[var(--row)] border-[var(--card-border)] text-[var(--text-3)] hover:bg-[var(--track)]'
                     }`}>
                     <div className="text-xl font-bold">{label}</div>
-                    <div className={`text-xs font-semibold ${detectionInterval === ms ? 'text-[#1E3FB8]/70' : 'text-[#00A8E1]'}`}>{tier}</div>
-                    <div className={`text-xs mt-0.5 ${detectionInterval === ms ? 'text-[#1E3FB8]/60' : 'text-white/40'}`}>{desc}</div>
+                    <div className={`text-xs font-semibold ${detectionInterval === ms ? 'text-[#1E3FB8]/70' : 'text-[var(--accent-cyan)]'}`}>{tier}</div>
+                    <div className={`text-xs mt-0.5 ${detectionInterval === ms ? 'text-[#1E3FB8]/60' : 'text-[var(--text-4)]'}`}>{desc}</div>
                   </button>
                 ))}
               </div>
               {detectionInterval <= 4000 && (
-                <p className="text-xs text-[#00A8E1] mt-2">
+                <p className="text-xs text-[var(--accent-cyan)] mt-2">
                   ⚡ Fast mode — YAMNet runs on-device every {detectionInterval / 1000}s. No API quota consumed.
                 </p>
               )}
               {detectionInterval === 8000 && (
-                <p className="text-xs text-white/50 mt-2">
+                <p className="text-xs text-[var(--text-4)] mt-2">
                   Eco mode — conserves battery. YAMNet still runs fully on-device at no cost.
                 </p>
               )}
@@ -2100,65 +2168,73 @@ const HearoApp = () => {
         </div>
 
         {/* Alert Preferences */}
-        <div className="bg-[#1E3FB8]/30 rounded-2xl p-6 border border-white/10">
-          <h3 className="text-xl font-semibold text-white mb-4 flex items-center">
-            <Vibrate className="w-6 h-6 mr-3 text-[#00A8E1]" />Alert Preferences
+        <div className="bg-[var(--card)] shadow-sm rounded-2xl p-6 border border-[var(--card-border)]">
+          <h3 className="text-xl font-semibold text-[var(--text-1)] mb-4 flex items-center">
+            <Vibrate className="w-6 h-6 mr-3 text-[var(--accent-cyan)]" />Alert Preferences
           </h3>
           {Object.entries(vibrationSettings).map(([type, intensity]) => (
             <div key={type} className="mb-6 last:mb-0">
               <div className="flex items-center space-x-3 mb-3">
-                <div className="text-[#00A8E1]">{UIUtils.getAlertIcon(type)}</div>
-                <span className="font-medium text-white">{UIUtils.getAlertText(type) || type}</span>
+                <div className="text-[var(--accent-cyan)]">{UIUtils.getAlertIcon(type)}</div>
+                <span className="font-medium text-[var(--text-1)]">{UIUtils.getAlertText(type) || type}</span>
               </div>
               <div className="space-y-2">
-                {['gentle', 'medium', 'strong'].map(level => (
-                  <label key={level} className={`flex items-center space-x-4 p-3 rounded-lg cursor-pointer transition-all ${intensity === level ? 'bg-[#FFE600]/10 border border-[#FFE600]/30' : 'bg-white/5 border border-transparent hover:bg-white/10'}`}>
-                    <input type="radio" name={`v-${type}`} checked={intensity === level}
-                      onChange={() => setVibrationSettings(prev => ({ ...prev, [type]: level }))}
-                      className="w-5 h-5 accent-[#FFE600]" />
-                    <div className="flex-1 flex items-center justify-between">
-                      <span className={`font-medium capitalize ${intensity === level ? 'text-[#FFE600]' : 'text-white/80'}`}>{level}</span>
-                      <span className={`font-mono text-sm ${intensity === level ? 'text-[#FFE600]' : 'text-white/40'}`}>
-                        {level === 'gentle' ? '▪▫▫' : level === 'medium' ? '▪▪▫' : '▪▪▪'}
-                      </span>
-                    </div>
-                  </label>
-                ))}
+                {[
+                  { level: 'gentle', desc: '150ms vibration',                        ind: '▪▫▫' },
+                  { level: 'medium', desc: 'Double pulse',                           ind: '▪▪▫' },
+                  { level: 'strong', desc: 'Emergency pattern with strong vibration', ind: '▪▪▪' },
+                ].map(({ level, desc, ind }) => {
+                  const active = intensity === level;
+                  return (
+                    <label key={level} className={`flex items-center space-x-4 p-3 rounded-lg cursor-pointer transition-all ${active ? 'bg-[var(--track)] border border-[#00A8E1]/40' : 'bg-[var(--row)] border border-transparent hover:bg-[var(--track)]'}`}>
+                      <input type="radio" name={`v-${type}`} checked={active}
+                        onChange={() => setVibrationSettings(prev => ({ ...prev, [type]: level }))}
+                        className={`appearance-none shrink-0 w-5 h-5 rounded-full border-2 cursor-pointer transition-all ${active ? 'border-[#00A8E1] bg-[#00A8E1] shadow-[inset_0_0_0_3px_#ffffff]' : 'border-[#9DC9E8] bg-white hover:border-[#00A8E1]'}`} />
+                      <div className="flex-1 flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className={`font-medium capitalize ${active ? 'text-[var(--accent-cyan)]' : 'text-[var(--text-2)]'}`}>{level}</div>
+                          <div className="text-xs text-[var(--text-3)] mt-0.5">{desc}</div>
+                        </div>
+                        <span className={`font-mono text-sm shrink-0 ${active ? 'text-[var(--accent-cyan)]' : 'text-[var(--text-4)]'}`}>{ind}</span>
+                      </div>
+                    </label>
+                  );
+                })}
               </div>
             </div>
           ))}
         </div>
 
         {/* Output Methods */}
-        <div className="bg-[#1E3FB8]/30 rounded-2xl p-6 border border-white/10">
-          <h3 className="text-xl font-semibold text-white mb-4">Output Methods</h3>
+        <div className="bg-[var(--card)] shadow-sm rounded-2xl p-6 border border-[var(--card-border)]">
+          <h3 className="text-xl font-semibold text-[var(--text-1)] mb-4">Output Methods</h3>
           <div className="space-y-4">
             {[
-              { Icon: Smartphone, color: 'text-[#00A8E1]', label: 'Screen Flash', on: true },
-              { Icon: Watch, color: 'text-[#FFE600]', label: 'Smartwatch Integration', on: true },
-              { Icon: Lightbulb, color: 'text-[#FFE600]', label: 'Smart Home Lights', on: false },
-              { Icon: Users, color: 'text-[#00A8E1]', label: 'Family Network Alerts', on: true },
+              { Icon: Smartphone, color: 'text-[var(--accent-cyan)]', label: 'Screen Flash', on: true },
+              { Icon: Watch, color: 'text-[var(--accent-gold)]', label: 'Smartwatch Integration', on: true },
+              { Icon: Lightbulb, color: 'text-[var(--accent-gold)]', label: 'Smart Home Lights', on: false },
+              { Icon: Users, color: 'text-[var(--accent-cyan)]', label: 'Family Network Alerts', on: true },
             ].map(({ Icon, color, label, on }) => (
-              <label key={label} className="flex items-center justify-between p-4 bg-white/5 rounded-lg cursor-pointer">
+              <label key={label} className="flex items-center justify-between p-4 bg-[var(--row)] rounded-lg cursor-pointer">
                 <div className="flex items-center space-x-3">
                   <Icon className={`w-6 h-6 ${color}`} />
                   <span className="font-medium">{label}</span>
                 </div>
-                <input type="checkbox" defaultChecked={on} className="w-5 h-5 text-[#00A8E1] rounded" />
+                <input type="checkbox" defaultChecked={on} className="w-5 h-5 text-[var(--accent-cyan)] rounded" />
               </label>
             ))}
           </div>
         </div>
 
         {/* Vibration Test */}
-        <div className="bg-[#1E3FB8]/30 rounded-2xl p-6 border border-white/10">
-          <h3 className="text-xl font-semibold text-white mb-1">Test Vibration Patterns</h3>
-          <p className="text-xs text-white/50 mb-4">Tap a button to feel each pattern on your device</p>
+        <div className="bg-[var(--card)] shadow-sm rounded-2xl p-6 border border-[var(--card-border)]">
+          <h3 className="text-xl font-semibold text-[var(--text-1)] mb-1">Test Vibration Patterns</h3>
+          <p className="text-xs text-[var(--text-4)] mb-4">Tap a button to feel each pattern on your device</p>
           <div className="grid grid-cols-2 gap-3">
             {[
               { label: 'Gentle',    emoji: '〰️', pattern: [0, 150],                    bg: 'bg-green-500/10 hover:bg-green-500/20 border-green-500/30',   text: 'text-green-400',  sub: 'text-green-400/70',  desc: '1 soft pulse'      },
-              { label: 'Medium',    emoji: '〰️〰️', pattern: [0, 200, 100, 200],          bg: 'bg-[#00A8E1]/10 hover:bg-[#00A8E1]/20 border-[#00A8E1]/30', text: 'text-[#00A8E1]',  sub: 'text-[#00A8E1]/70', desc: '2 short pulses'    },
-              { label: 'Strong',    emoji: '⚡', pattern: [0, 300, 150, 300, 150, 300],  bg: 'bg-[#FFE600]/10 hover:bg-[#FFE600]/20 border-[#FFE600]/30', text: 'text-[#FFE600]',  sub: 'text-[#FFE600]/70', desc: '3 firm pulses'     },
+              { label: 'Medium',    emoji: '〰️〰️', pattern: [0, 200, 100, 200],          bg: 'bg-[#00A8E1]/10 hover:bg-[#00A8E1]/20 border-[#00A8E1]/30', text: 'text-[var(--accent-cyan)]',  sub: 'text-[var(--accent-cyan)]/70', desc: '2 short pulses'    },
+              { label: 'Strong',    emoji: '⚡', pattern: [0, 300, 150, 300, 150, 300],  bg: 'bg-[#FFE600]/10 hover:bg-[#FFE600]/20 border-[#FFE600]/30', text: 'text-[var(--accent-gold)]',  sub: 'text-[var(--accent-gold)]/70', desc: '3 firm pulses'     },
               { label: 'Emergency', emoji: '🚨', pattern: [0, 500, 100, 500, 100, 500], bg: 'bg-red-500/10   hover:bg-red-500/20   border-red-500/30',    text: 'text-red-400',    sub: 'text-red-400/70',   desc: '3 long rapid bursts'},
             ].map(({ label, emoji, pattern, bg, text, sub, desc }) => (
               <button key={label} onClick={() => navigator.vibrate && navigator.vibrate(pattern)}
@@ -2170,36 +2246,80 @@ const HearoApp = () => {
             ))}
           </div>
           <button onClick={() => navigator.vibrate && navigator.vibrate(0)}
-            className="w-full mt-3 p-3 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl text-white/60 hover:text-white/80 text-sm font-medium transition-all">
+            className="w-full mt-3 p-3 bg-[var(--row)] hover:bg-[var(--track)] border border-[var(--card-border)] rounded-xl text-[var(--text-3)] hover:text-[var(--text-2)] text-sm font-medium transition-all">
             ✕ Cancel Vibration
           </button>
         </div>
 
+        {/* Developer Options */}
+        <div className="bg-[var(--card)] shadow-sm rounded-2xl p-6 border border-[var(--card-border)]">
+          <h3 className="text-lg font-semibold text-[var(--text-1)] mb-1 flex items-center gap-2">
+            <span>🛠</span>Developer Options
+          </h3>
+          <p className="text-xs text-[var(--text-4)] mb-4">For testing and demonstrations only</p>
+          <label className="flex items-center justify-between p-4 bg-[var(--row)] rounded-lg cursor-pointer">
+            <div>
+              <span className="font-medium">Demo Mode</span>
+              <p className="text-xs text-[var(--text-3)] mt-0.5">Show "Kitchen Fire Emergency" demo button on Home</p>
+            </div>
+            <input type="checkbox" checked={demoModeEnabled}
+              onChange={e => {
+                setDemoModeEnabled(e.target.checked);
+                localStorage.setItem('hearo_demo_mode', String(e.target.checked));
+              }}
+              className="w-5 h-5 text-[var(--accent-cyan)] rounded" />
+          </label>
+          <label className="flex items-center justify-between p-4 bg-[var(--row)] rounded-lg cursor-pointer mt-3">
+            <div>
+              <span className="font-medium">Real Impact Story</span>
+              <p className="text-xs text-[var(--text-3)] mt-0.5">Show "Somchai's Story" testimonial card on Home</p>
+            </div>
+            <input type="checkbox" checked={impactStoryEnabled}
+              onChange={e => {
+                setImpactStoryEnabled(e.target.checked);
+                localStorage.setItem('hearo_impact_story', String(e.target.checked));
+              }}
+              className="w-5 h-5 text-[var(--accent-cyan)] rounded" />
+          </label>
+          <label className="flex items-center justify-between p-4 bg-[var(--row)] rounded-lg cursor-pointer mt-3">
+            <div>
+              <span className="font-medium">Debug Panel</span>
+              <p className="text-xs text-[var(--text-3)] mt-0.5">Show on-device diagnostics on Home while listening</p>
+            </div>
+            <input type="checkbox" checked={debugEnabled}
+              onChange={e => {
+                setDebugEnabled(e.target.checked);
+                localStorage.setItem('hearo_debug', String(e.target.checked));
+              }}
+              className="w-5 h-5 text-[var(--accent-cyan)] rounded" />
+          </label>
+        </div>
+
         {/* Performance */}
-        <div className="bg-[#1E3FB8]/30 rounded-2xl p-6 border border-white/10">
-          <h3 className="text-xl font-semibold text-white mb-4">System Performance</h3>
+        <div className="bg-[var(--card)] shadow-sm rounded-2xl p-6 border border-[var(--card-border)]">
+          <h3 className="text-xl font-semibold text-[var(--text-1)] mb-4">System Performance</h3>
           <div className="grid grid-cols-2 gap-4 text-sm">
             <div className="p-3 bg-[#00A8E1]/10 rounded-lg">
-              <div className="font-medium text-white">Primary AI</div>
-              <div className="text-lg font-bold text-[#00A8E1]">{modelServices.geminiApi ? 'Gemini' : 'YAMNet'}</div>
-              <div className="text-xs text-[#00A8E1]">{modelServices.geminiApi ? '+ transcription' : '0.459 mAP'}</div>
+              <div className="font-medium text-[var(--text-1)]">Primary AI</div>
+              <div className="text-lg font-bold text-[var(--accent-cyan)]">{modelServices.geminiApi ? 'Gemini' : 'YAMNet'}</div>
+              <div className="text-xs text-[var(--accent-cyan)]">{modelServices.geminiApi ? '+ transcription' : '0.459 mAP'}</div>
             </div>
             <div className="p-3 bg-green-500/10 rounded-lg">
-              <div className="font-medium text-white/70">Sound Classes</div>
+              <div className="font-medium text-[var(--text-3)]">Sound Classes</div>
               <div className="text-2xl font-bold text-green-400">527</div>
               <div className="text-xs text-green-400/70">AudioSet categories</div>
             </div>
             <div className="p-3 bg-[#00A8E1]/10 rounded-lg">
-              <div className="font-medium text-white/70">Inference</div>
-              <div className="text-2xl font-bold text-[#00A8E1]">~2s</div>
-              <div className="text-xs text-[#00A8E1]/70">per classification</div>
+              <div className="font-medium text-[var(--text-3)]">Inference</div>
+              <div className="text-2xl font-bold text-[var(--accent-cyan)]">~2s</div>
+              <div className="text-xs text-[var(--accent-cyan)]/70">per classification</div>
             </div>
             <div className="p-3 bg-[#FFE600]/10 rounded-lg">
-              <div className="font-medium text-white/70">Alerts Stored</div>
-              <div className="text-2xl font-bold text-[#FFE600]">
+              <div className="font-medium text-[var(--text-3)]">Alerts Stored</div>
+              <div className="text-2xl font-bold text-[var(--accent-gold)]">
                 {(() => { try { return JSON.parse(localStorage.getItem('hearo_alerts') || '[]').length; } catch (_) { return 0; } })()}
               </div>
-              <div className="text-xs text-[#FFE600]/70">30-day history</div>
+              <div className="text-xs text-[var(--accent-gold)]/70">30-day history</div>
             </div>
           </div>
         </div>
@@ -2209,8 +2329,8 @@ const HearoApp = () => {
 
   // ==================== EMERGENCY SCREEN ====================
   const EmergencyScreen = () => (
-    <div className="bg-[#0B1740] min-h-screen">
-      <div className="bg-red-700 px-6 py-8 text-white border-b border-white/10">
+    <div className="bg-[var(--page)] min-h-screen app-screen">
+      <div className="bg-red-700 px-6 py-8 text-white border-b border-[var(--card-border)]">
         <h1 className="text-2xl font-bold">Emergency</h1>
         <p className="text-red-100 text-sm">AI-powered emergency response</p>
       </div>
@@ -2218,29 +2338,36 @@ const HearoApp = () => {
         <div className="grid gap-4 relative z-10">
           {[
             { bg: 'bg-red-600 hover:bg-red-700 active:scale-95',      Icon: AlertTriangle, t: 'Emergency 191',    s: 'Thai Emergency Services',          tel: '191'  },
-            { bg: 'bg-red-800 hover:bg-red-900 active:scale-95',      Icon: Shield,        t: 'Fire Department',  s: 'Call 199 • Auto-detection enabled', tel: '199'  },
-            { bg: 'bg-[#00A8E1] hover:bg-[#0090C4] active:scale-95', Icon: Phone,         t: 'Medical Emergency', s: 'Call 1669 • Health monitoring',    tel: '1669' },
-            { bg: 'bg-[#1E3FB8] hover:bg-[#1835A0]',                  Icon: Users,         t: 'Family Network',   s: '3 contacts • GPS location sharing', tel: null   },
-          ].map(({ bg, Icon, t, s, tel }) => (
+            { bg: 'bg-red-800 hover:bg-red-900 active:scale-95',      Icon: Shield,        t: 'Fire Department',  s: 'Call 199 · Auto-detection enabled', tel: '199'  },
+            { bg: 'bg-[#00A8E1] hover:bg-[#0090C4] active:scale-95', Icon: Phone,         t: 'Medical Emergency', s: 'Call 1669 · Health monitoring',    tel: '1669' },
+            { bg: 'bg-[#1E3FB8]/50 opacity-50 cursor-not-allowed',    Icon: Users,         t: 'Family Network',   s: 'Coming soon · Phase 3',            tel: null   },
+          ].map(({ bg, Icon, t, s, tel }) => tel ? (
             <button key={t}
-              disabled={!tel}
-              onClick={() => tel && (IS_NATIVE
+              onClick={() => IS_NATIVE
                 ? HearoAlert.dialNumber({ number: tel }).catch(() => {})
-                : (window.location.href = 'tel:' + tel))
+                : (window.location.href = 'tel:' + tel)
               }
-              className={`${bg} text-white p-8 rounded-2xl text-center border border-white/10 transition-all w-full disabled:opacity-60`}>
+              className={`${bg} text-white p-8 rounded-2xl text-center border border-[var(--card-border)] transition-all w-full`}>
+
               <Icon className="w-12 h-12 mx-auto mb-3" />
               <span className="text-xl font-bold">{t}</span>
               <p className="text-sm mt-2 opacity-90">{s}</p>
             </button>
+          ) : (
+            <div key={t}
+              className={`${bg} text-white p-8 rounded-2xl text-center border border-[var(--card-border)]`}>
+              <Icon className="w-12 h-12 mx-auto mb-3" />
+              <span className="text-xl font-bold">{t}</span>
+              <p className="text-sm mt-2 opacity-90">{s}</p>
+            </div>
           ))}
         </div>
-        <div className="bg-[#1E3FB8]/30 border-2 border-[#00A8E1]/30 rounded-2xl p-6">
+        <div className="bg-[var(--card)] shadow-sm border-2 border-[#00A8E1]/30 rounded-2xl p-6">
           <div className="flex items-start space-x-3 mb-4">
-            <AlertTriangle className="w-6 h-6 text-[#00A8E1] mt-1 flex-shrink-0" />
+            <AlertTriangle className="w-6 h-6 text-[var(--accent-cyan)] mt-1 flex-shrink-0" />
             <div>
-              <h4 className="font-semibold text-white">Intelligent Emergency Detection</h4>
-              <p className="text-sm text-[#00A8E1] mt-1">
+              <h4 className="font-semibold text-[var(--text-1)]">Intelligent Emergency Detection</h4>
+              <p className="text-sm text-[var(--accent-cyan)] mt-1">
                 YAMNet (on-device, 521 AudioSet classes) classifies sounds — fire alarms, screaming, glass breaking, and more — entirely in your browser. Gemini 2.5 Flash adds transcription when a key is configured.
               </p>
             </div>
@@ -2253,12 +2380,12 @@ const HearoApp = () => {
             ))}
           </div>
         </div>
-        <div className="bg-[#1E3FB8]/30 rounded-2xl p-6 border border-white/10">
-          <h3 className="text-lg font-semibold text-white mb-4">Emergency Response Analytics</h3>
+        <div className="bg-[var(--card)] shadow-sm rounded-2xl p-6 border border-[var(--card-border)]">
+          <h3 className="text-lg font-semibold text-[var(--text-1)] mb-4">Emergency Response Analytics</h3>
           <div className="grid grid-cols-3 gap-4 text-center">
-            <div><div className="text-2xl font-bold text-red-600">15s</div><div className="text-sm text-white/70">Avg Response</div></div>
-            <div><div className="text-2xl font-bold text-green-600">100%</div><div className="text-sm text-white/70">Alert Success</div></div>
-            <div><div className="text-2xl font-bold text-[#00A8E1]">24/7</div><div className="text-sm text-white/70">Monitoring</div></div>
+            <div><div className="text-2xl font-bold text-red-600">15s</div><div className="text-sm text-[var(--text-3)]">Avg Response</div></div>
+            <div><div className="text-2xl font-bold text-green-600">100%</div><div className="text-sm text-[var(--text-3)]">Alert Success</div></div>
+            <div><div className="text-2xl font-bold text-[var(--accent-cyan)]">24/7</div><div className="text-sm text-[var(--text-3)]">Monitoring</div></div>
           </div>
         </div>
       </div>
@@ -2267,7 +2394,7 @@ const HearoApp = () => {
 
   // ==================== RENDER ====================
   return (
-    <div className="max-w-md mx-auto bg-[#0B1740] min-h-screen text-white">
+    <div className="max-w-md mx-auto bg-[var(--page)] min-h-screen text-[var(--text-1)]">
       <div className="pb-20">
         {/* Called as functions (not <Component/>) so they render as part of this
             component's tree — prevents a full unmount/remount on every re-render,
@@ -2277,15 +2404,15 @@ const HearoApp = () => {
         {currentScreen === 'emergency' && EmergencyScreen()}
       </div>
 
-      <div className="fixed bottom-0 left-1/2 transform -translate-x-1/2 w-full max-w-md bg-[#0B1740] border-t border-white/10 z-50 shadow-lg">
+      <div className="fixed bottom-0 left-1/2 transform -translate-x-1/2 w-full max-w-md bg-[var(--page)] border-t border-[var(--card-border)] z-50 shadow-lg">
         <div className="grid grid-cols-3 p-2">
           {[
-            { s: 'home',      Icon: Home,    label: 'Home',      ac: 'text-[#FFE600] bg-[#FFE600]/10' },
-            { s: 'settings',  Icon: Settings, label: 'Settings', ac: 'text-[#FFE600] bg-[#FFE600]/10' },
-            { s: 'emergency', Icon: Shield,   label: 'Emergency', ac: 'text-red-400 bg-red-500/10' },
+            { s: 'home',      Icon: Home,    label: 'Home',      ac: 'text-[var(--text-2)] bg-[#1E3FB8]/10' },
+            { s: 'settings',  Icon: Settings, label: 'Settings', ac: 'text-[var(--text-2)] bg-[#1E3FB8]/10' },
+            { s: 'emergency', Icon: Shield,   label: 'Emergency', ac: 'text-red-600 bg-red-500/10' },
           ].map(({ s, Icon, label, ac }) => (
             <button key={s} onClick={() => setCurrentScreen(s)}
-              className={`p-4 text-center transition-colors ${currentScreen === s ? ac : 'text-white/50'} rounded-lg`}
+              className={`p-4 text-center transition-colors ${currentScreen === s ? ac : 'text-[var(--text-4)]'} rounded-lg`}
               aria-label={label}>
               <Icon className="w-6 h-6 mx-auto mb-1" />
               <span className="text-xs font-medium">{label}</span>
@@ -2298,6 +2425,22 @@ const HearoApp = () => {
         {isListening && recentAlerts.length > 0 &&
           `Hearo detected ${recentAlerts[0].rawLabel || UIUtils.getAlertText(recentAlerts[0].soundType) || UIUtils.getAlertText(recentAlerts[0].type) || 'a sound'} at ${recentAlerts[0].location} with ${recentAlerts[0].confidence}% confidence`}
       </div>
+
+      {/* Tiered alert surfaces — overlay (critical/important) + ambient banner */}
+      {activeAlert && (
+        <AlertOverlay
+          alert={activeAlert.alert}
+          tier={activeAlert.tier}
+          onDismiss={() => {
+            setActiveAlert(null);
+            haptics.stop();
+            try { alertRef.current.stopAlertHaptics(); } catch (_) {}
+          }}
+        />
+      )}
+      {ambientAlert && (
+        <AmbientBanner alert={ambientAlert} onDismiss={() => setAmbientAlert(null)} />
+      )}
     </div>
   );
 };

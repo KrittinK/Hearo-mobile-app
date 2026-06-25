@@ -15,3 +15,45 @@ code {
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* ===== Theme tokens — light (default) / dark ===== */
+:root, [data-theme="light"] {
+  --page:        #F2F9FF;
+  --header:      #1E3FB8;
+  --card:        #ffffff;
+  --card-border: #CDE7F6;
+  --row:         #EBF6FD;
+  --row-alt:     #F6F8FB;
+  --track:       #DBF2FC;
+  --slider:      #C2E7F8;
+  --text-1:      #0E2070;
+  --text-2:      #1E3FB8;
+  --text-3:      #64748B;
+  --text-4:      #94A3B8;
+  --accent-cyan: #0B6E92;
+  --accent-gold: #9A7B0A;
+}
+
+[data-theme="dark"] {
+  --page:        #0C1A4E;
+  --header:      #221E78;
+  --card:        rgba(30, 63, 184, 0.30);
+  --card-border: rgba(255, 255, 255, 0.10);
+  --row:         rgba(255, 255, 255, 0.05);
+  --row-alt:     rgba(255, 255, 255, 0.05);
+  --track:       rgba(255, 255, 255, 0.10);
+  --slider:      rgba(255, 255, 255, 0.20);
+  --text-1:      #ffffff;
+  --text-2:      rgba(255, 255, 255, 0.85);
+  --text-3:      rgba(255, 255, 255, 0.60);
+  --text-4:      rgba(255, 255, 255, 0.50);
+  --accent-cyan: #00A8E1;
+  --accent-gold: #FFE600;
+}
+
+/* Dark-mode page: vibrant blue with a soft radial glow + faint grid, like the website hero */
+[data-theme="dark"] .app-screen {
+  background-image:
+    radial-gradient(125% 90% at 72% 26%, #2B52CC 0%, #19357F 48%, #0C1A4E 100%);
+  background-attachment: fixed;
+}
